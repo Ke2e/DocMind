@@ -155,3 +155,76 @@
 - **新增运行资产**：`docker-compose.yml`、`docker/nginx.conf`、`backend/Dockerfile`、`backend/.dockerignore`、`backend/app/workers/celery_app.py`、`backend/app/workers/tasks.py`
 
 > 待办：1.5 的"双账号 fixture"依赖 `users` 模型，随 3.x 落地补齐（已在 tasks.md 标注依赖关系）。
+
+## 2026-09-12（第 2 组：数据模型与迁移）
+
+### 任务 2.1 五张表模型
+
+- 新增 `backend/app/models/`：`enums.py`（`DocumentStatus` + `STATUS_SEQUENCE` + 两表共用的列类型）、`user.py`、`knowledge_base.py`、`document.py`、`chunk.py`、`processing_task.py`；`__init__.py` 聚合导出（应用与 Alembic 共用一个 `Base`，避免漏注册表导致 autogenerate 生成 DROP）
+- 字段口径 = ADR-0001（`name VARCHAR(128)`、`kb_id NOT NULL`、`uq_kb_user_name`、`idx_documents_kb`）+ Key Entities（FR-018 的 8 个文档字段、Processing Task 的两个计数器与最近执行时间）
+- 两处新增/取舍（详见 findings D-024 / D-025）：
+  - `documents.deleted_at` 墓碑列，落地 9.1 的"删除标记阻止写回"；派生数据（chunks / processing_tasks）物理删 + `ON DELETE CASCADE` 兜底
+  - `processing_tasks.document_id` 唯一（落地 5.3"只产生一条处理记录"）；状态在 `documents.status` 与 `processing_tasks.stage` 各存一份，由 6.4 的单一迁移方法同事务写入
+- 证据（可复现命令）：
+
+  ```bash
+  cd backend && .venv/Scripts/python.exe -c "
+  import app.models
+  from app.models import Base
+  for t in Base.metadata.sorted_tables:
+      print(t.name, [(c.name, str(c.type), c.nullable) for c in t.columns])
+  "
+  ```
+
+  实测输出摘要：`users` 4 列 / `knowledge_bases` 5 列 / `documents` 13 列 / `chunks` 6 列 / `processing_tasks` 8 列；索引 `uq_kb_user_name ['user_id','name'] unique`、`idx_documents_kb ['kb_id']`、`ix_documents_user_id ['user_id']`；唯一约束 `uq_users_username`、`uq_chunks_document_chunk_index(document_id, chunk_index)`、`uq_processing_tasks_document_id(document_id)`
+- 证据：`.venv/Scripts/python.exe -m pytest -q` → **21 passed, 0 skipped**（新增 `tests/test_models.py` 10 项；"无循环依赖"用子进程全新导入验证；末项连真实测试库按 metadata 建表并断言 5 表存在）
+
+### 任务 2.2 Alembic 迁移与干净库验证
+
+- 新增 `backend/alembic.ini`（**纯 ASCII**、不存连接串）、`alembic/env.py`（异步模板；URL 取自应用配置 `DATABASE_URL`，`import app.models` 保证 5 表全进 metadata，`compare_type=True`）、`alembic/script.py.mako`、`alembic/README`、`alembic/versions/0001_initial_schema.py`
+- `backend/Dockerfile` 补 `COPY alembic.ini` / `COPY alembic`：容器内即可迁移，不必把库端口暴露到宿主
+
+干净库 = compose 起的 pg 实例里新建的 `docmind_test`（本机无本地 PostgreSQL）：
+
+```bash
+docker exec docmind-pg psql -U docmind -d docmind -c "CREATE DATABASE docmind_test OWNER docmind"   # 初始 0 张表
+cd backend
+DATABASE_URL="postgresql+asyncpg://docmind:<口令>@127.0.0.1:5433/docmind_test" .venv/Scripts/alembic.exe upgrade head
+```
+
+| 检查项 | 命令 | 实测结果 |
+|---|---|---|
+| upgrade | `alembic upgrade head` / `alembic current` | `Running upgrade -> 0001, initial schema`；`0001 (head)` |
+| 表 | `information_schema.tables` | 6 张 = 5 业务表 + `alembic_version` |
+| `uq_kb_user_name` | `pg_indexes` | `knowledge_bases \| uq_kb_user_name \| unique=Y \| user_id, name` |
+| `idx_documents_kb` | `pg_indexes` | `documents \| idx_documents_kb \| unique=N \| kb_id` |
+| 外键级联 | `pg_constraint` | `chunks→documents ON DELETE CASCADE`、`processing_tasks→documents ON DELETE CASCADE`；`documents.kb_id→knowledge_bases` 无级联（RESTRICT，非空拒删的第二道闸门） |
+| 列默认值 | `information_schema.columns` | `documents.status default 'uploaded'`、`chunk_count default 0`、`processing_tasks.stage default 'uploaded'`、两计数 `default 0`；`deleted_at` / `last_run_at` / `error_message` 可空 |
+| 无 Enum CHECK 约束 | `information_schema.check_constraints`（须过滤 PG 呈现的 `*_not_null`） | **0**（状态列是 VARCHAR）；未过滤时为 33 = 32 个 NOT NULL + `alembic_version` 的 1 个 |
+| downgrade | `alembic downgrade base` | 仅剩 `alembic_version` 且 **0 行**，`alembic current` 无输出，无残留索引 |
+| 重复 upgrade | `alembic upgrade head` | 再次成功，6 张表 |
+| 模型 ≡ 迁移 | `alembic check` | `No new upgrade operations detected.` |
+
+- 开发库（compose 的 `docmind`）由**容器内**迁移，证明容器路径可用：`docker exec docmind-api alembic upgrade head` → `Running upgrade -> 0001`；`docmind` 库 6 张表、`alembic_version=0001`、两个 ADR 索引齐备
+
+### 第 2 组任务状态
+
+| 任务 | 状态 | 验证证据 |
+|---|---|---|
+| 2.1 五张表模型 | 完成 | metadata 快照 5 表逐列核对；`pytest -q` → **21 passed, 0 skipped**（含真实测试库建表用例） |
+| 2.2 Alembic 迁移 | 完成 | `docmind_test` 干净库 upgrade→downgrade→upgrade 全通过；`uq_kb_user_name` / `idx_documents_kb` 实际存在；`alembic check` 无差异；`docker exec docmind-api alembic upgrade head` 亦成功 |
+
+### 本轮修掉的环境问题（详见 findings D-026 / D-027）
+
+- **D-026-1**：`alembic.ini` 含非 ASCII 时，alembic 以 GBK 读该文件 → `UnicodeDecodeError` 直接退出。规则：ini 纯 ASCII，中文说明写进 `env.py`。
+- **D-026-2**：1.5 的 conftest 测试库口令（`docmind`）与 `.env`（`docmind_dev_pw`）不一致 → (a) 已修：从 `.env` 读 `POSTGRES_*` / `PG_HOST_PORT` 拼测试库连接串，支持 `TEST_DATABASE_URL` 覆盖，且改为直接赋值避免外部 `DATABASE_URL` 带偏。
+- **D-027**：pytest-asyncio **1.4** 默认为每个用例建函数级事件循环，与 session 作用域 `db_engine` fixture 冲突 → 真实栈 `RuntimeError: Event loop is closed` → `AttributeError: 'NoneType' object has no attribute 'send'`，被 `check_database` 吞成"测试库不可达"→ **skip**。已修：`pyproject.toml` 固定 `asyncio_default_fixture_loop_scope` / `asyncio_default_test_loop_scope` 为 `session`，并加 `addopts = "-ra"` 强制汇总 skip；`check_database` / `check_redis` 增加失败日志（HTTP 响应仍只回类型名）。
+
+### 留待后续组的衔接点
+
+- **4.2 / 9.1**：知识库"文档数量"与"非空拒删"只统计 `deleted_at IS NULL`；删库前若只剩墓碑行需先物理清除，否则被 `fk_documents_kb_id_knowledge_bases` 拦住。
+- **5.3**：`uq_processing_tasks_document_id` 已就位；分布式锁仍需应用层实现（唯一约束只是兜底）。
+- **第 3 组（开工前必须停）**：JWT 签发库与密码哈希库属"新依赖"，先出 ADR 等批；`users.password_hash` 已按 VARCHAR(255) 预留。
+- **`docmind_test` 使用约定**：`pytest` 的 `db_schema` fixture 会按 metadata 建表、跑完 drop 表（但保留 `alembic_version` 行）。因此跑完测试若要用 alembic 验库，先复位：
+  `docker exec docmind-pg psql -U docmind -d docmind_test -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"`
+  再 `DATABASE_URL=…/docmind_test alembic upgrade head`。

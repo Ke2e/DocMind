@@ -1,0 +1,43 @@
+# Alembic 迁移（任务 2.2）
+
+结构变更一律走这里：**新增修订文件，不改已生效的修订**（AGENTS.md §5）。
+
+## 连接串从哪来
+
+`alembic.ini` 里**不存连接串**（`sqlalchemy.url` 留空）。`env.py` 从应用配置读
+`DATABASE_URL`，环境变量优先级高于 `.env`，因此：
+
+- 宿主（本机无本地 PG，走 compose 暴露的 5433）：
+
+  ```bash
+  cd backend
+  # 迁移开发库（用仓库根 .env 里的 DATABASE_URL）
+  .venv/Scripts/alembic.exe upgrade head
+  # 迁移测试库（环境变量覆盖）
+  DATABASE_URL=postgresql+asyncpg://docmind:<口令>@127.0.0.1:5433/docmind_test \
+    .venv/Scripts/alembic.exe upgrade head
+  ```
+
+- 容器内（compose 已把 host 覆盖为服务名 `pg`）：
+
+  ```bash
+  docker exec docmind-api alembic upgrade head
+  ```
+
+## 常用命令
+
+```bash
+alembic current                                   # 当前修订
+alembic history                                   # 修订链路
+alembic upgrade head                              # 升到最新
+alembic downgrade base                            # 全部回退（本期无存量数据，风险低）
+alembic check                                     # 模型与迁移是否等价（"No new upgrade operations detected"）
+alembic revision --autogenerate -m "..." --rev-id 0002   # 生成新修订
+```
+
+## 两个坑
+
+1. **`alembic.ini` 必须纯 ASCII** —— alembic 用 locale 编码读该文件，中文 Windows 是 GBK，
+   写 UTF-8 中文注释会直接 `UnicodeDecodeError`。中文说明请写进 `env.py`。
+2. **新增模型后要挂进聚合导出** —— `env.py` 已 `import app.models`；若新模型没进
+   `app/models/__init__.py` 的导出，autogenerate 会把它当成"库里多余的表"而生成 DROP。

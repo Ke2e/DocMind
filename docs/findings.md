@@ -135,3 +135,35 @@
 **3. beat 没有内置健康端点** —— 用「心跳任务写进 Redis 的键是否还在」做探针：beat 每 `BEAT_HEARTBEAT_INTERVAL_SECONDS` 触发 `beat_heartbeat`，worker 执行后 `SETEX docmind:beat:heartbeat`（TTL = 3 个周期）。这一条探针同时覆盖 beat → broker → worker → redis 整条链路，比 `kill -0 1` 之类的进程级伪探针有意义。
 
 **4. 同批并行编辑同一文件会丢改动** —— 给 `config.py` 加 `BEAT_HEARTBEAT_INTERVAL_SECONDS` 的编辑与另一处编辑同批提交，前者未落盘，导致 worker / beat 反复重启（`'Settings' object has no attribute 'BEAT_HEARTBEAT_INTERVAL_SECONDS'`）。**规则：同一文件的编辑串行执行，改完必须复核内容。**
+
+## 2026-09-12（第 2 组：数据模型与迁移）
+
+### D-024 文档删除走"墓碑 + 级联"双轨（2.1 落地 design D8 / 任务 9.1）
+
+- **问题**：9.1 同时要求"级联清除派生数据"和"删除标记阻止写回"，而两条单独用都有缺口——纯物理删除挡不住已开工的 worker 写回（它手里还攥着 document_id）；纯软删除又会与"知识库非空拒删"打架（墓碑行仍持有 `kb_id`，外键会拦住删库）。
+- **结论**：`documents.deleted_at` 作墓碑。删除请求在同一事务内：(1) 写墓碑；(2) 物理删该文档的 `chunks` 与 `processing_tasks`；(3) 两张表对 `documents` 的外键带 `ON DELETE CASCADE` 兜底，覆盖"知识库删除时清墓碑"这类后续物理清除。所有读取一律 `deleted_at IS NULL`；worker 每次写回前在同一事务内复查墓碑，命中即放弃写入。
+- **衍生约束（交给第 4 / 9 组）**：知识库的"文档数量"与"非空拒删"都只统计 `deleted_at IS NULL` 的行；删库前若该库只剩墓碑行，需先物理清除再删库，否则会被 `fk_documents_kb_id_knowledge_bases` 拦住（该外键刻意保持默认 RESTRICT，是"非空拒删"的第二道闸门）。
+
+### D-025 状态为什么存两份（`documents.status` 与 `processing_tasks.stage`）
+
+- **冲突**：design D3 写的是"`documents.status` 存当前阶段、任务记录只存计数与时间"，而冻结的 `spec.md` Key Entities 把"当前阶段"列在 Processing Task 上。
+- **取舍**：两份都留，但把"同事务成对写入"定为硬约束（由 6.4 的单一状态迁移方法负责，禁止别处改状态）。保留 `stage` 的实际收益是 8.3 的卡死扫描可按"中间态 + `last_run_at` 超阈值"在单表筛完，不必 join。
+- 同时 `processing_tasks.document_id` 建**唯一约束**：既落实 5.3"并发提交同一文档只产生一条处理记录"，也让重试复用同一行、只累加计数。
+
+### D-026 两个环境级坑（2026-09-12 实测踩到并修掉）
+
+**1. `alembic.ini` 必须纯 ASCII** —— alembic 用 locale 编码读该文件，中文 Windows 下是 GBK，写 UTF-8 中文注释会让 CLI 直接 `UnicodeDecodeError` 退出。规则：ini 保持纯 ASCII，中文说明写进 `alembic/env.py`（.py 恒按 UTF-8 读）。
+
+**2. 1.5 的测试库连接串口令与 `.env` 不一致 → 用例静默降级为 skip** —— conftest 里硬编码的测试库口令是 `docmind`，而 PG 容器是按 `.env` 的 `docmind_dev_pw` 建的；于是所有依赖 `db_engine` 的用例都会 `pytest.skip`：**输出仍是"通过"，但一条库断言都没跑**。1.5 当时没有用到库的用例，所以没暴露。
+- 已修：从仓库根 `.env` 读 `POSTGRES_*` / `PG_HOST_PORT` 拼测试库连接串（口令只留一份来源），并支持 `TEST_DATABASE_URL` 覆盖；`setdefault` 改成直接赋值，避免外部残留的 `DATABASE_URL` 把测试带偏。
+- **教训：`skip` 不等于通过。**脚手架里任何"库不可达就跳过"的降级路径，都会在口令/端口配错时伪装成绿灯；第 3 组起有库断言后，必须确认用例是 **ran** 而不是 **skipped**。
+
+### D-027 pytest-asyncio 1.4 的默认事件循环与 session 作用域 fixture 冲突（2.2 实测踩到并修掉）
+
+- **现象**：新增的"在真实测试库按 metadata 建表"用例被 **skip**，原因是 `check_database` 返回"数据库不可用：AttributeError"；同时 pytest 抛 `RuntimeWarning: coroutine 'Connection._cancel' was never awaited`。
+- **定位过程**：① 宿主用纯脚本直连测试库 → **成功**（排除 asyncpg / 网络 / 口令）；② 写临时用例对比函数作用域与 session 作用域 → **函数作用域通过、session 作用域 ERROR**，真实栈为
+  `RuntimeError: Event loop is closed` → `AttributeError: 'NoneType' object has no attribute 'send'`（ProactorEventLoop 随循环一起关了）。
+- **根因**：pytest-asyncio **1.4** 默认为每个用例创建函数级事件循环，而 `db_engine` 是 session 作用域异步 fixture——连接池里的连接在 A 循环建立、在 B 循环使用并关闭。
+- **修法**：`pyproject.toml` 固定 `asyncio_default_fixture_loop_scope = "session"` 与 `asyncio_default_test_loop_scope = "session"`（全测试共用一个循环）；另加 `addopts = "-ra"` 强制汇总 skip。
+- **附带改进**：`check_database` / `check_redis` 现在会把异常类型 + 原始消息写进日志（HTTP 响应仍只回类型名，不泄漏连接串）。原实现把 `Event loop is closed` 压成一个 `AttributeError`，害我一度误判为"测试库不可达"。
+- **教训**：本机 pytest / pytest-asyncio 是 9.1.1 / 1.4.0 的新版本，行为与老教程不同；凡"跳过"都必须追到底，不能当作环境问题放过。

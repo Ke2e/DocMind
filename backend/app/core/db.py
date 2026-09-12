@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -18,6 +19,8 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import Settings
+
+logger = logging.getLogger(__name__)
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -74,6 +77,10 @@ async def check_database(settings: Settings) -> str | None:
             await conn.execute(text("SELECT 1"))
         return None
     except Exception as exc:  # noqa: BLE001 - 探测接口需要吞掉任何连接异常
+        # 只把异常类型回给调用方（避免把连接串细节带进 HTTP 响应），但服务端日志要带
+        # 原始消息——否则像 "Event loop is closed" 这种根因会被压成一个类型名，
+        # 排查时只能靠猜（2026-09-12 实测代价：一次误判"测试库不可达"）。
+        logger.warning("数据库连通性探测失败：%s: %s", type(exc).__name__, exc)
         return f"数据库不可用：{type(exc).__name__}"
 
 
@@ -85,6 +92,7 @@ async def check_redis(settings: Settings) -> str | None:
         await client.ping()
         return None
     except Exception as exc:  # noqa: BLE001
+        logger.warning("缓存连通性探测失败：%s: %s", type(exc).__name__, exc)
         return f"缓存不可用：{type(exc).__name__}"
     finally:
         if client is not None:

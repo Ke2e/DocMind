@@ -26,11 +26,13 @@
 
 ## 2. 数据模型与迁移（ADR-0001）
 
-- [ ] 2.1 定义 SQLAlchemy 模型：本仓库当前无任何表，需**新建全部 5 张表**——`users`、`knowledge_bases`（ADR-0001）、`documents`（含 `kb_id NOT NULL` FK）、`chunks`（加 `(document_id, chunk_index)` 唯一约束）、处理任务表；字段清单以 `specs/001-doc-ingest-pipeline/spec.md` Key Entities（FR-018 含原始文件名 / 类型 / 字节大小 / 状态 / 失败原因 / 片段数量 / 归属知识库 / 创建时间）为准
+- [x] 2.1 定义 SQLAlchemy 模型：本仓库当前无任何表，需**新建全部 5 张表**——`users`、`knowledge_bases`（ADR-0001）、`documents`（含 `kb_id NOT NULL` FK）、`chunks`（加 `(document_id, chunk_index)` 唯一约束）、处理任务表；字段清单以 `specs/001-doc-ingest-pipeline/spec.md` Key Entities（FR-018 含原始文件名 / 类型 / 字节大小 / 状态 / 失败原因 / 片段数量 / 归属知识库 / 创建时间）为准
   - 说明：ADR-0001 所称 "BREAKING" 是相对 001 设计稿而言；对本仓库而言是**全新建表**，不存在"已有 users / documents 再增字段"
   - 验证：模型可导入无循环依赖，`metadata` 打印出的表与字段符合 ADR-0001 描述与 Key Entities 清单
-- [ ] 2.2 生成 Alembic 迁移（新增文件，不改历史版本）并在干净库上验证 upgrade / downgrade，验证：upgrade 后存在 `uq_kb_user_name` 与 `idx_documents_kb`，downgrade 后回到初始结构
+  - 完成证据（2026-09-12）：`backend/app/models/` 新增 `enums.py`（DocumentStatus + 推进序列）/ `user.py` / `knowledge_base.py` / `document.py` / `chunk.py` / `processing_task.py`，`__init__.py` 聚合导出；`pytest -q` → **20 passed**（新增 `tests/test_models.py` 9 项，其中"无循环依赖"用子进程干净导入验证）；`metadata` 快照逐表核对：users 4 列、knowledge_bases 5 列（`name VARCHAR(128)`）、documents 13 列（`kb_id` NOT NULL）、chunks 6 列、processing_tasks 8 列；`uq_kb_user_name(user_id,name,unique)` 与 `idx_documents_kb(kb_id)` 均在 metadata 中；新增列 `documents.deleted_at`（D8 删除标记）与 `document_id` 唯一（5.3 一文档一条处理记录），理由见 `docs/findings.md` D-024/D-025
+- [x] 2.2 生成 Alembic 迁移（新增文件，不改历史版本）并在干净库上验证 upgrade / downgrade，验证：upgrade 后存在 `uq_kb_user_name` 与 `idx_documents_kb`，downgrade 后回到初始结构
   - 干净库说明：本机无本地 PostgreSQL，干净库取 compose 起的 pg 实例中独立创建的 `docmind_test` 库
+  - 完成证据（2026-09-12）：新增 `backend/alembic.ini`（**纯 ASCII**，不存连接串）/ `alembic/env.py`（URL 取自应用配置、`import app.models` 保 5 表全进 metadata、`compare_type=True`）/ `script.py.mako` / `README` / `versions/0001_initial_schema.py`；`docker exec docmind-pg psql -U docmind -d docmind -c "CREATE DATABASE docmind_test OWNER docmind"` 建干净库（初始 0 表）→ `DATABASE_URL=…/docmind_test alembic upgrade head` → `0001 (head)`、6 张表；`pg_indexes` 实测 `knowledge_bases | uq_kb_user_name | unique=Y | user_id,name` 与 `documents | idx_documents_kb | unique=N | kb_id`；`pg_constraint` 实测 chunks / processing_tasks 对 documents 为 `ON DELETE CASCADE`、`documents.kb_id` 无级联（RESTRICT）；`alembic downgrade base` → 仅剩 `alembic_version` 且 0 行、`alembic current` 为空 → 再 upgrade 成功；`alembic check` → `No new upgrade operations detected.`（模型与迁移等价）；容器内 `docker exec docmind-api alembic upgrade head` 亦成功（Dockerfile 已补 `COPY alembic.ini` / `COPY alembic`），开发库 `docmind` 同步到位
 
 ## 3. 账号体系
 

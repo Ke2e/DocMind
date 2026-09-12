@@ -35,6 +35,14 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# 事件循环必须是 session 级：`db_engine` 是 session 作用域的异步 fixture，若各用例
+# 各用一个函数级循环，连接池里的连接会跨循环使用 → Windows 上表现为
+# `AttributeError: 'NoneType' object has no attribute 'send'`（Proactor 循环已关闭），
+# 而 check_database 会把它吞成"测试库不可达"并 skip（2026-09-12 实测踩到，见 findings D-027）。
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 pythonpath = ["."]
+# -ra：强制在汇总里列出 skip。跳过 ≠ 通过，必须一眼看得见。
+addopts = "-ra"
 filterwarnings = ["ignore::DeprecationWarning"]
