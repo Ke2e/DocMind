@@ -3,10 +3,11 @@
 - [ ] 1.1 初始化 git 仓库与 `.gitignore`（排除 `.env`、`.codebuddy/`），验证：`git status` 中不出现真实 `.env`，首次提交成功
 - [ ] 1.2 按 OneHub 已验证分层搭 `backend/` 骨架（`app/core` `app/api` `app/models` `app/schemas` `app/services` `app/workers`）与依赖清单，验证：本地能起空应用，健康检查接口返回 200
 - [ ] 1.3 编写 Docker Compose（api / worker / beat / pg / redis / nginx，Milvus 系列列为可选 profile），验证：`docker compose up -d` 后全部容器 healthy，且默认不启动 Milvus 相关容器
-- [ ] 1.4 配置系统与 `.env` 样例，**按"本期必需 / 本期占位"两组**写入并注释：
+- [ ] 1.4 配置系统，与已就位的 `.env` / `.env.example` 对齐（**单一模型网关**，三个用途共用一个 `BASE_URL` + `API_KEY`）：
   - 本期必需（缺失即启动失败）：`DATABASE_URL`、`REDIS_URL`、`SECRET_KEY`
-  - 本期占位（W5 不参与数据流，缺失只告警不阻断）：`DEEPSEEK_API_KEY`（仅生成，base_url `https://api.deepseek.com`，模型 `deepseek-flash`）、`SILICONFLOW_API_KEY`（仅嵌入与重排，base_url `https://api.siliconflow.cn/v1`，模型 `BAAI/bge-m3` / `BAAI/bge-reranker-v2-m3` / 嵌入维度 1024）
-  - 验证：只缺占位项时应用能正常启动并打印告警；缺必需项时启动失败并指出缺哪一项；模型 ID、base_url、嵌入维度均可从配置覆盖，不写死在代码里
+  - 本期占位（W5 不参与数据流，缺失只告警不阻断）：`BASE_URL`、`API_KEY`、`GENERATIVE_MODEL`、`EMBEDDING_MODEL` + `EMBEDDING_DIM`、`RERANK_MODEL` + `RERANK_BASE_URL`
+  - 需注意：重排不在 `/compatible-mode/v1` 下（实测 404），必须用 `RERANK_BASE_URL` 指向 DashScope 原生路径 `/api/v1/services/rerank/text-rerank/text-rerank`，请求体为 `{model, input:{query,documents}, parameters:{top_n,return_documents}}`，响应取 `output.results[].relevance_score`
+  - 验证：只缺占位项时应用能正常启动并打印告警；缺必需项时启动失败并指出缺哪一项；`BASE_URL`、`API_KEY`、三个模型名、`EMBEDDING_DIM`、`RERANK_BASE_URL` 全部从配置读取，代码中不出现硬编码的模型名或地址
 
 ## 2. 数据模型与迁移（ADR-0001）
 

@@ -65,3 +65,22 @@
 - **DeepSeek 官方不提供 embedding 与 rerank 模型**（模型表只有 `deepseek-flash` 与 `deepseek-v4-pro` 两个文本模型）。RAG 的"生成"与"表示/排序"本就是两类模型，第二家是刚需而非可选。
 - **文档纠错**：`docs/PROJECT_CONTEXT.md` 原写"DeepSeek-V3"已过期——现官方模型 ID 为 `deepseek-flash`（= DeepSeek-V4.1-Flash）与 `deepseek-v4-pro`；`deepseek-chat` / `deepseek-reasoner` 已下线，新代码用旧名会直接报错。已修正该行，并让 tasks.md 1.4 把 base_url 与模型 ID 写进配置样例。
 - **成本提示**：DeepSeek 高峰时段（周一至周五 9:00-12:00、14:00-18:00）单价翻倍 → W7/W10 的批量评测放在空闲时段跑。
+
+### D-014 实际网关是「一家统一网关」，不是两家服务商（2026-09-12 以 `.env` 为准修正）
+- 开发者在 `.env` 中配置的是**一个阿里云 MaaS 聚合网关**（OpenAI 兼容）：一个 `BASE_URL` + 一个 `API_KEY` 同时提供生成 / 嵌入 / 重排。D-013 里"DeepSeek + 硅基流动两家"是通用情况，本项目按实际配置执行。
+- 实测（全部 200）：
+  - 生成 `deepseek-v4-pro-0813` @ `{BASE_URL}/chat/completions`
+  - 嵌入 `qwen3.7-text-embedding` @ `{BASE_URL}/embeddings` → **维度 1024，与 Milvus `FLOAT_VECTOR(1024)` 天然一致，无需改规格**
+  - 重排 `qwen3.7-text-rerank` @ `{host}/api/v1/services/rerank/text-rerank/text-rerank`
+- **重排不在 OpenAI 兼容路径下**：`/compatible-mode/v1/rerank`、`/v1/rerank`、`/rerank` 全部 404；必须用 DashScope 原生路径，故配置拆出 `RERANK_BASE_URL`。请求体 `{model, input:{query,documents}, parameters:{top_n,return_documents}}`，响应取 `output.results[].relevance_score`。
+- **生成模型默认思考模式**：`max_tokens` 过小会把额度全耗在 `reasoning_tokens` 上、`content` 返回空串（实测 16 token 全被吃掉）。实现时须显式控制思考模式与 `max_tokens`。
+- 网关 `GET {BASE_URL}/models` 可列出全部可用模型（200+），换模型前先查列表。
+
+### D-015 验收语料改为脚本生成（不入库）
+- `tools/gen_acceptance_corpus.py` 确定性生成 10 个文件到 `fixtures/acceptance/`；该目录已 gitignore（含 10.53MB PDF，不宜入库）。
+- 用 pypdf 做机器自检：正常 PDF 文本层可抽取、扫描件 0 字符、损坏文件报错——三条都符合预期。
+- 语料正文即 DocMind 自身规格（512/64、50/50、RRF 常数 60、阈值 0.6/0.75/0.92、50MB），W7 的 20-query 评测集可直接复用。
+
+### D-016 git 仓库已建立
+- `git init -b main`，首次提交 `d34b36b`，43 个文件入库。
+- `.gitignore` 排除：`.env`、`.venv/`、`.codebuddy/`、`.workbuddy/`、`fixtures/acceptance/`、Python/Node 产物；已用 `git check-ignore -v` 逐条核验命中。

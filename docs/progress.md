@@ -60,3 +60,19 @@
 - 纠错：修正 `docs/PROJECT_CONTEXT.md` 第 2 节"DeepSeek-V3"（已于官方下线 `deepseek-chat` / `deepseek-reasoner`）→ 现用 `deepseek-flash` / `deepseek-v4-pro`。
 - tasks.md 1.4 改为明确写入两个 base_url 与三处模型 ID，并要求可配置覆盖、不写死。
 - 复核：`openspec validate --strict` 仍为 valid，0/32 tasks。
+
+## 2026-09-12（配置归位 / git 初始化 / 验收语料 / 交接文档）
+
+- **配置归位**：`.env` 已置于仓库根（compose 与后端共用的单一来源），另建 `.env.example`（占位 + 用途注释，可入库）。
+  - 发现实际是**一家统一网关**（一个 BASE_URL + 一个 API_KEY），非两家服务商 → 补 `EMBEDDING_DIM=1024`、`RERANK_BASE_URL`。
+- **端点探活（全部实测，非文档推测）**：
+  - 生成 `deepseek-v4-pro-0813` → 200；注意默认思考模式，小 `max_tokens` 会返回空 `content`
+  - 嵌入 `qwen3.7-text-embedding` → 200，**维度 1024**（与 Milvus 规格一致）
+  - 重排 `qwen3.7-text-rerank` → 200，但**只在 DashScope 原生路径**下（`/compatible-mode/v1/rerank` 等均 404）
+- **git 初始化**：`git init -b main` + 首次提交 `d34b36b`，43 个文件；
+  `.gitignore` 排除 `.env`、`.venv/`、`.codebuddy/`、`.workbuddy/`、`fixtures/acceptance/`，已逐条 `git check-ignore -v` 核验。
+- **验收语料**：新增 `tools/gen_acceptance_corpus.py`，生成 10 个文件（含 10.53MB / 114 页大 PDF）。
+  pypdf 自检：正常 PDF 可抽文本、扫描件 0 字符、损坏件与错扩展名件报错——均符合预期。
+- **交接文档**：`docs/HANDOFF.md`（含环境坑、决策表、工件地图、网关实况、语料结果、建议 skills）。
+- `tasks.md` 1.4 由"两家服务商"改写为实际网关配置项；`docs/PROJECT_CONTEXT.md` 模型行同步。
+- 复核：`openspec validate --strict` 仍 valid。
