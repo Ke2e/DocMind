@@ -20,6 +20,11 @@ dependencies = [
   "tiktoken>=0.7",
   "pypdf>=4.2",
   "python-docx>=1.1",
+  # 鉴权（ADR-0002，任务 3.1/3.2）：凭证签发用 PyJWT，密码哈希用 argon2id。
+  # 依赖只在这里声明（无 requirements.txt / lockfile），镜像走 `pip install .`
+  # —— 只装本地 venv 不会进镜像。
+  "pyjwt>=2.9",
+  "argon2-cffi>=23.1",
 ]
 
 [project.optional-dependencies]

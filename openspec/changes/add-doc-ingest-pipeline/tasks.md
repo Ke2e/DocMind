@@ -15,11 +15,12 @@
     - 存储：`UPLOAD_DIR`（api 与 worker 共享卷路径）、`MAX_UPLOAD_MB`（默认 50）、`ALLOWED_EXTENSIONS`（默认 pdf/docx/md/txt）
     - 分块（供 6.2）：`CHUNK_SIZE_TOKENS`（默认 512）、`CHUNK_OVERLAP_TOKENS`（默认 64）
     - 重试与补偿（供 8.1 / 8.2 / 8.3）：`AUTO_RETRY_MAX`（默认 2）、`MANUAL_RETRY_MAX`（默认 3）、`RETRY_BACKOFF_BASE_SECONDS`、`STUCK_TASK_THRESHOLD_SECONDS`、`BEAT_HEARTBEAT_INTERVAL_SECONDS`
-    - 鉴权（供 3.1 / 3.2）：`PASSWORD_MIN_LENGTH`（默认 8）、`TOKEN_EXPIRE_MINUTES`、`JWT_ALGORITHM`
+    - 鉴权（供 3.1 / 3.2）：`PASSWORD_MIN_LENGTH`（默认 8）、`PASSWORD_MAX_LENGTH`（默认 128）、`TOKEN_EXPIRE_MINUTES`、`JWT_ALGORITHM`
   - 需注意：重排不在 `/compatible-mode/v1` 下（实测 404），必须用 `RERANK_BASE_URL` 指向 DashScope 原生路径 `/api/v1/services/rerank/text-rerank/text-rerank`，请求体为 `{model, input:{query,documents}, parameters:{top_n,return_documents}}`，响应取 `output.results[].relevance_score`
   - 完成证据（2026-09-12）：`pytest -q` → **11 passed**；进程级验证「不读 `.env` 且无环境变量」→ `ConfigError -> 配置缺失，应用无法启动：DATABASE_URL、REDIS_URL、SECRET_KEY（读取自 …\.env 或环境变量；请参考 .env.example 补齐）`；只缺占位项时启动成功并打印 `模型网关配置未就位` 告警（`tests/test_config.py`）；`test_no_hardcoded_model_or_endpoint_in_app_source` 扫描 `backend/app/**/*.py` 确认无模型名 / 服务商地址字面量
 - [x] 1.5 测试脚手架：pytest + pytest-asyncio + httpx `AsyncClient`，`conftest` 提供测试库 schema 建/销毁、事件循环、应用实例、双账号 fixture，验证：`pytest` 能跑通一个最小用例；测试前后测试库无残留表；测试不依赖已启动的 worker（可在无 Celery 下运行接口测试）
   - 落地节奏：脚手架本体（配置隔离 / 客户端 / 测试库 schema 建·销毁 fixture）随本项交付；**双账号 fixture 依赖 `users` 模型，随 3.x 补齐**
+    - 补记（2026-09-12）：双账号 fixture 已随 3.3 落地 —— `tests/conftest.py` 的 `Account` / `account_factory` / `two_accounts`（走真实注册+登录接口，不直接插库）
   - 完成证据（2026-09-12）：`backend/tests/conftest.py` 在导入应用前用环境变量顶掉 `.env`（测试永不连开发库）；`client` / `raw_client`（容忍应用内异常，用于验 500 响应体）双客户端就位；`db_schema` fixture 对 `Base.metadata` 先 drop 后 create、用例结束再 drop，库不可达时 **skip 而非假通过**；`pytest -q` 11 passed 且全程未启动 Celery
 - [x] 1.6 统一错误响应契约：定义错误响应体（机器可读 `code` + 面向用户的可读 `message`，可选 `detail`）与全局异常处理器，验证：触发未捕获异常时响应体结构符合契约且**不含堆栈、模块路径等内部细节**（7.2 的前提）；404 / 422 等默认错误同样归一
   - 完成证据（2026-09-12）：`backend/app/core/errors.py` 定义 `ErrorCode` 枚举、`AppError` 及子类与四类全局处理器；`tests/test_error_contract.py` 覆盖 404（框架默认）/ 422（参数校验）/ 500（未捕获异常）/ 业务异常四条路径，均返回 `{code, message, detail?}`；500 路径响应体中 `Traceback`、`site-packages`、SQL 片段等标记词检查全部不命中
@@ -36,10 +37,25 @@
 
 ## 3. 账号体系
 
-- [ ] 3.1 注册接口（密码以不可还原形式存储、用户名唯一、强度校验），验证：接口测试覆盖成功 / 用户名重复 / 弱密码三种情况
-  - 强度规则（开发者 2026-09-12 定）：长度 ≥ `PASSWORD_MIN_LENGTH`（默认 8）**且同时包含字母与数字**；拒绝时说明具体不满足项
-- [ ] 3.2 登录与凭证签发（带有效期，有效期来自 `TOKEN_EXPIRE_MINUTES`），验证：正确凭证可换取登录凭证；错误凭证被拒且响应不区分"用户不存在"与"密码错误"
-- [ ] 3.3 鉴权依赖组件：身份只由凭证推导，忽略请求体中的用户标识，验证：无凭证与伪造凭证访问内容接口均返回拒绝；请求体携带他人用户标识不影响归属
+- [x] 3.1 注册接口（密码以不可还原形式存储、用户名唯一、强度校验），验证：接口测试覆盖成功 / 用户名重复 / 弱密码三种情况
+  - 强度规则（开发者 2026-09-12 定，同日追加了上限与用户名规则）：长度 ≥ `PASSWORD_MIN_LENGTH`（默认 8）**且 ≤ `PASSWORD_MAX_LENGTH`（默认 128）**，同时包含字母与数字；拒绝时说明具体不满足项
+  - 用户名规则（同日定）：**区分大小写**，`alice` 与 `Alice` 是两个账号（不做大小写归一）
+  - 前置：ADR-0002 已批准（`docs/adr/0002-auth-libraries.md`），依赖 `pyjwt>=2.9` + `argon2-cffi>=23.1` 进 `pyproject.toml`
+  - 完成证据（2026-09-12）：新增 `app/core/security.py`（argon2id 哈希）、`app/schemas/auth.py`（用户名归一化 + 强度校验）、`app/services/auth.py`、`app/api/routes/auth.py`
+  - 三种情况的证据（`tests/test_auth_api.py`）：成功 → 201 且响应体只有 `{id, username}`（断言 `set(body) == {"id","username"}` 且口令原文不出现在响应里）；重复 → 409 `conflict` 且库里用户数仍为 1；弱密码 → 5 组参数化用例各自 422 且 `detail` 里点名具体不满足项，同时断言**不产生任何账号**
+  - 补记（2026-09-12 追加决策，走 openspec-update-change 流程）：密码上限 `PASSWORD_MAX_LENGTH`（默认 128）与"用户名区分大小写"已落地 ——
+    超限 → 422 点名"长度不超过 128 位"（参数化第 6 组）；**恰好 128 字符必须通过**（`test_register_accepts_password_exactly_at_the_upper_bound`）；
+    `alice` / `Alice` 是两个独立账号（`test_register_is_case_sensitive_on_username`）
+  - 摘要形态实测：`$argon2id$…` **97 字符**（`tests/test_security.py` 断言 ≤255，即"选 argon2id 不改 DDL"的机器证据）
+- [x] 3.2 登录与凭证签发（带有效期，有效期来自 `TOKEN_EXPIRE_MINUTES`），验证：正确凭证可换取登录凭证；错误凭证被拒且响应不区分"用户不存在"与"密码错误"
+  - 完成证据（2026-09-12）：`POST /api/auth/login` 返回 `{access_token, token_type:"bearer", expires_in}`，该 token 可立即访问受保护接口；payload 只含 `sub/iat/exp`（`tests/test_security.py` 断言键集合，落实 ADR-0002 D4）
+  - 不可区分性（`tests/test_auth_api.py::test_login_failures_are_indistinguishable`）：密码错与用户不存在两条路径**响应体逐字节相同**（401 `{code:"unauthorized", message:"用户名或密码不正确"}`），且两条路径耗时都 >10ms —— 证明不存在的用户也真跑了哈希校验，没走"秒回"捷径
+  - 凭证校验的否定用例：过期 / 他人密钥签名 / `alg=none` 无签名串 / `sub` 非数字，全部被拒（`tests/test_security.py` 6 组）
+- [x] 3.3 鉴权依赖组件：身份只由凭证推导，忽略请求体中的用户标识，验证：无凭证与伪造凭证访问内容接口均返回拒绝；请求体携带他人用户标识不影响归属
+  - 完成证据（2026-09-12）：`app/api/deps.py` 新增 `get_db_session`（每请求一个事务边界）与 `get_current_user`；`GET /api/auth/me` 作为受保护接口样本（4.x/5.x 内容接口出现前，它就是 3.3 的落点）
+  - 拒绝路径：无凭证 / 格式非法 / 他人密钥签名 / 过期 / 账号已被删（5 组用例）一律 401，且响应体不区分原因
+  - **归属判据**：`test_identity_comes_from_the_token_not_the_request_body` —— 在独立 app 实例上挂探针路由，同时回显"依赖推导出的身份"与"请求体声明的身份"；带 A 的凭证 + 请求体写 B 的 user_id，返回 `{"authenticated_user_id": A.id, "received_user_id": B.id}`，证明请求体身份被忽略
+  - 衔接点：真正的越权**写**操作（创建知识库 / 上传文档时忽略 body 里的 user_id）要等 4.1 / 5.2 有对应接口后端到端验；本项先锁住依赖层行为
 
 ## 4. 知识库
 

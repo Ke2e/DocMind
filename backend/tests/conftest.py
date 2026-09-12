@@ -6,6 +6,8 @@
 2. **不依赖已启动的 worker** —— 接口测试只走 ASGI，任务投递在后续用例中替换为记录桩。
 3. **测试库 schema 建 / 销毁** —— 用例前后各清一次，保证测试库无残留表。
    库不可达时跳过（而不是伪装通过）。
+4. **账号 fixture** —— `account_factory` / `two_accounts`（任务 1.5 的遗留项，3.3 起启用），
+   供鉴权与越权用例复用；`db_schema` 每用例重建表，故用户名可以固定，不会跨用例串味。
 
 测试库前置（本机无本地 PG，只能用 compose 起的实例）：
 
@@ -20,6 +22,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -54,7 +57,7 @@ os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL") or _test_databa
 os.environ["REDIS_URL"] = os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:6380/15")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 
-from collections.abc import AsyncIterator  # noqa: E402
+from collections.abc import AsyncIterator, Awaitable, Callable  # noqa: E402
 
 import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
@@ -127,3 +130,55 @@ async def db_schema(db_engine) -> AsyncIterator[None]:
     finally:
         async with db_engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
+
+
+# 满足强度规则（≥ PASSWORD_MIN_LENGTH 且同时含 ASCII 字母与数字）的测试口令
+TEST_PASSWORD = "docmind123"
+
+
+@dataclass(frozen=True)
+class Account:
+    """一个已注册并已登录的测试账号。"""
+
+    id: int
+    username: str
+    password: str
+    token: str
+
+    @property
+    def auth_header(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.token}"}
+
+
+@pytest.fixture
+async def account_factory(client: AsyncClient, db_schema) -> Callable[..., Awaitable[Account]]:
+    """注册 + 登录一个账号并返回 `Account`（任务 1.5 遗留的双账号 fixture，3.3 起启用）。
+
+    刻意走真实接口而不是直接插库：fixture 自身就顺带覆盖了注册与登录两条链路。
+    """
+
+    async def _create(username: str = "alice", password: str = TEST_PASSWORD) -> Account:
+        registered = await client.post(
+            "/api/auth/register", json={"username": username, "password": password}
+        )
+        assert registered.status_code == 201, f"注册失败：{registered.status_code} {registered.text}"
+
+        logged_in = await client.post(
+            "/api/auth/login", json={"username": username, "password": password}
+        )
+        assert logged_in.status_code == 200, f"登录失败：{logged_in.status_code} {logged_in.text}"
+
+        return Account(
+            id=registered.json()["id"],
+            username=username,
+            password=password,
+            token=logged_in.json()["access_token"],
+        )
+
+    return _create
+
+
+@pytest.fixture
+async def two_accounts(account_factory) -> tuple[Account, Account]:
+    """双账号：鉴权与"越权访问他人对象"用例的基础（规格「数据归属由登录态决定」）。"""
+    return await account_factory("alice"), await account_factory("bob")

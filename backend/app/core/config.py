@@ -95,6 +95,9 @@ class Settings(BaseSettings):
 
     # ---------------- 鉴权（任务 3.1 / 3.2）----------------
     PASSWORD_MIN_LENGTH: int = 8
+    # 上限不是强度旋钮，而是"别让超长输入白耗 argon2 算力"的输入护栏；
+    # 与下限一样属业务参数，故进配置（1.4 的"代码里不得出现字面量"）
+    PASSWORD_MAX_LENGTH: int = 128
     TOKEN_EXPIRE_MINUTES: int = 60 * 24
     JWT_ALGORITHM: str = "HS256"
 

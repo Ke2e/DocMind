@@ -111,6 +111,16 @@ class ForbiddenError(AppError):
         super().__init__(ErrorCode.FORBIDDEN, message, status_code=403, detail=detail)
 
 
+class UnauthorizedError(AppError):
+    """未登录 / 凭证不可用（任务 3.2 / 3.3）。
+
+    凭证过期、签名不符、账号已不存在……一律用它，且**不要**在 message 里区分原因。
+    """
+
+    def __init__(self, message: str | None = None, *, detail: Any | None = None) -> None:
+        super().__init__(ErrorCode.UNAUTHORIZED, message, status_code=401, detail=detail)
+
+
 def _sanitize_validation_errors(exc: RequestValidationError) -> list[dict[str, Any]]:
     """只保留字段位置与原因，丢掉 pydantic 附加的内部上下文。"""
     return [

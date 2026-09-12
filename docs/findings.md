@@ -167,3 +167,130 @@
 - **修法**：`pyproject.toml` 固定 `asyncio_default_fixture_loop_scope = "session"` 与 `asyncio_default_test_loop_scope = "session"`（全测试共用一个循环）；另加 `addopts = "-ra"` 强制汇总 skip。
 - **附带改进**：`check_database` / `check_redis` 现在会把异常类型 + 原始消息写进日志（HTTP 响应仍只回类型名，不泄漏连接串）。原实现把 `Event loop is closed` 压成一个 `AttributeError`，害我一度误判为"测试库不可达"。
 - **教训**：本机 pytest / pytest-asyncio 是 9.1.1 / 1.4.0 的新版本，行为与老教程不同；凡"跳过"都必须追到底，不能当作环境问题放过。
+
+## 2026-09-12（第 3 组开工前的停机点）
+
+### D-028 鉴权选型出 ADR（待批）——PyJWT + argon2-cffi
+
+- **产出**：`docs/adr/0002-auth-libraries.md`（Proposed）。建议 **PyJWT**（`pyjwt>=2.9`）+ **argon2-cffi**（`argon2-cffi>=23.1`，直接用、不经 passlib）。
+- **为什么不改 DDL**：`password_hash VARCHAR(255)` 是任务 2.1 按 argon2id 输出（约 97 字符）预留的；选 argon2id 与模型设计一致 → 不触发第二次 DDL 停机点。**这也是选型与 2.1 强耦合的原因**，若改选 bcrypt（60 字符）虽仍装得下，但会让这条预留失去意义。
+- **参数不进配置**（D2）：argon2id 的 `time_cost` / `memory_cost` 做成 `Settings` 环境变量只会给人"调小一点跑得快些"的机会，而调小直接削弱抗爆破强度 → 定为代码常量；测试若嫌慢，用依赖注入换低开销 profile。
+- **配套约定同时定下**（D4，免得 3.x 各写各的）：payload 只放 `sub/iat/exp`（不放 `username`/`role`，凭证字段越多越容易被当权限用）；校验失败一律 401 且不区分"过期"与"伪造"；**用户不存在时也要跑一次假哈希**，否则"响应快 = 用户不存在"就是时序侧信道。
+- **算法白名单是红线**：`jwt.decode(..., algorithms=[settings.JWT_ALGORITHM])`，绝不 `algorithms=None`、绝不拿 header 里的 `alg` 当依据——2024 年 python-jose 的算法混淆漏洞（CVE-2024-33663）就是这么来的。
+
+**选型类事实必须查上游，不能凭记忆**（本次踩到的自省）：
+
+- 我最初准备把 python-jose 打成"带未修 CVE 的库"，**这是错的**：CVE-2024-33663 / 33664 在 **3.4.0 已修**（GHSA-6c5p-j8vq-pqhj），现行 3.5.0 不受影响。否决它的正当理由只能是"历史 CVE 记录 + extras 后端易在运行时暴露"，不是"现在还有洞"。
+- 对照事实全部用可复现命令取：`pypi.org/pypi/<pkg>/json` 取版本与**发布日期**（passlib 停在 **2020-10-08**，这才是"停更"的硬证据），上游 issue/bug 编号佐证兼容性；`pip install --dry-run` / `pip download` 验完整依赖闭包与 wheel 形态。
+- **教训**：涉及"某库是否安全 / 是否维护"的判断，凭印象写进 ADR 等于把错误固化进决策文档。发布日期、CVE 修复版本号、wheel 文件名这三类东西都必须现查。
+
+**镜像侧未验证项**（已写进 ADR）：本机只验了 Windows wheel，`python:3.12-slim` 上的 manylinux wheel 未实测 → 批准后须 `docker compose up -d --build` 并进容器 `import jwt, argon2` 复核；若需编译则为新的构建依赖，要回头更新 ADR。
+
+## 2026-09-12（第 3 组实施：账号体系）
+
+### D-029 一次 pip 中断把 venv 打残了半个 —— 现象、诊断与修复
+
+**触发**：前台跑 `pip install -e ".[dev]"`（第 3 组新增依赖）时被 SIGTERM 打断，输出为空、exit 1。
+（沙箱对重命令有时限；pip 又恰好落在"卸旧装新"的中间态。）
+
+**现象**：先是 `from argon2 import PasswordHasher` → `ImportError: cannot import name 'PasswordHasher' from 'argon2' (unknown location)`，
+接着连 `from fastapi import FastAPI` 也是 `unknown location`。
+
+**关键识别信号**：`unknown location` + `module.__file__ is None` = **命名空间包**。
+实测 `argon2.__path__` 指向 site-packages 里那个目录、`__file__` 为 None —— 该目录只剩空壳（缺 `__init__.py`），真包被它遮住了。
+**以后见到 `cannot import name X from Y (unknown location)`，第一步就去看 `Y.__file__` 是不是 None。**
+
+**范围**：写一个全量探测脚本（枚举 site-packages 顶层条目，逐个 import，看 `__file__`）——比逐个猜快得多。
+结果 **9 个包不可用**（fastapi / pydantic_settings / asyncpg / alembic / celery / python-docx / uvicorn / anyio / annotated_types）。
+用 `ls` + bash for 循环做整目录体检反而被 SIGTERM 打断——**这种体检要用单进程脚本，不要用 shell 循环逐个 `ls`**。
+
+**两个过程性教训**：
+
+1. **中断 ≠ 未执行**：第一次探测与第二次探测结果不一致（第二次多出几个包能导入），说明被 SIGTERM 的 pip 子进程**还在后台继续装**。
+   与 `d9a1cb2` 那次"commit 审批超时但提交其实已落库"是同一类教训 —— 事后必须用只读命令核实真实状态。
+2. **Windows 上 `--force-reinstall` 是坏选择**：它要先把所有包卸载再装，实测卡在卸载阶段 **12 分钟无任何进展**（日志 mtime 不动），只能主动终止。
+   该环境下杀软 + 海量小文件删除/写入极慢。
+
+**最终有效的修复路径**（顺序照做即可）：
+
+```bash
+# 1) 把损坏的 venv 重命名挪开（不直接删，留退路）
+mv backend/.venv backend/.venv.damaged-YYYYMMDD
+# 2) 用系统解释器重建（本机 3.12.3）
+"D:/IDE/Python/Python312/python.exe" -m venv backend/.venv
+# 3) 装依赖（**走缓存**，别加 --no-cache-dir）；重活一律后台跑
+cd backend && .venv/Scripts/python.exe -m pip install -e ".[dev]"
+# 4) 全量探测确认 67/67 可导入，再删掉那个挪走的旧 venv
+```
+
+重建后实测：`pip install -e ".[dev]"` 7 分钟 exit 0，site-packages 顶层 67 个包 **67/67 可导入**。
+
+**新增的机器级规则**：`pip install` / `docker build` / 大套件 pytest 一律用后台任务跑，不要赌前台时限。
+
+### D-030 两个实现层的真坑（3.x 落地时才暴露）
+
+1. **`OAuth2PasswordBearer` 返回的是原始 token 字符串，不是 `HTTPAuthorizationCredentials`**（后者是 `HTTPBearer` 的返回类型）。
+   我按后者写了 `credentials.credentials`，7 个用例同时变红：`AttributeError: 'str' object has no attribute 'credentials'` ——
+   后果是把本该 401 的请求变成 500。**测试一次就把类型假设的错误抓住了**，改法是直接 `decode_access_token(token, settings)`。
+2. **argon2id 的实测数字**（默认参数 `time_cost=3` / `memory_cost=64MiB` / `parallelism=4`）：摘要 **97 字符**、单次哈希 **56ms**、校验 **55ms**。
+   → 摘要长度落进 `VARCHAR(255)` 余量充足（ADR-0002 的"不改 DDL"成立）；
+   → 56ms 是 CPU 密集操作，服务层一律 `asyncio.to_thread` 丢线程池，不在事件循环里算。
+3. **每请求只有一个 DB session**：`get_db_session` 同时被 `get_current_user` 与端点依赖，FastAPI 的依赖缓存（`use_cache` 默认开）保证它只被解析一次。
+   这是"注册返回 201 后库里立刻查得到"的前提——否则会出现两个 session、两个事务，提交时序会变得难以推理。
+
+### D-031 端到端验收的时机陷阱：别在容器刚重建完就发写请求
+
+- **现象**：`docker compose up -d --build` 返回后立刻跑 E2E，11 项全 PASS；但随后查库发现**那一轮注册的账号（id=1）根本不在库里**——而同一个脚本再跑一遍，账号（id=3）稳定落库；单独发一次注册（id=2）也稳定落库。
+- **归因**：只有那一轮压在**容器替换窗口**上（旧 api 容器排空/终止时期）。我不掌握更细的因果关系，**就不编造更具体的成因**；能确定的是这个窗口不可信。
+  （顺带排除掉了"提交根本没生效"这个更可怕的可能：`session_scope` 的提交路径本身是正确的，id=2 / id=3 都是磁盘上的真实行。）
+- **两条可复用规则**：
+  1. **写操作的端到端验收要等服务稳定后再跑**，不要紧接在 `up -d --build` 之后；
+  2. **"成功"必须以查库为准，不能只看接口回了 201** —— 本次正是靠 `SELECT ... FROM users` 才发现缺失，接口侧当时 11/11 全绿，完全看不出问题。
+- **善后**：残留的 `probe_*` / `e2e_*` 测试行已用 `DELETE` 清掉并复核 `users` 计数为 0（开发库不留测试数据）。
+
+### D-032 两个"规格未规定项"定案 + 本组代码审查结论（2026-09-12）
+
+**开发者拍板（本人作答，未代答）**
+
+| 未规定项 | 结论 | 落地 |
+| --- | --- | --- |
+| 用户名大小写 | **区分大小写**（`alice` ≠ `Alice`） | 保持现状、零行为改动；已写进 `user-auth` 规格 Requirement + 新增「用户名区分大小写」场景 + 测试 `test_register_is_case_sensitive_on_username` |
+| 密码长度上限 | **加 128 字符上限** | 新增配置 `PASSWORD_MAX_LENGTH=128`（`.env.example` 同步）；`schemas/auth.py` 校验并点名"长度不超过 128 位"；`test_config` 校验默认值与可覆盖；`test_auth_api` 加超限用例与**恰好 128 字符必须通过**的边界用例 |
+| 第 3 组提交方式 | 先 review 再提交 | 见下 |
+
+**为什么上限进配置、而 argon2 的 `time_cost` / `memory_cost` 不进**（避免与 ADR-0002 D2 读起来自相矛盾）：
+前者是**输入护栏**——挡畸形超长输入白耗算力，不改变任何安全强度；后者是**抗爆破旋钮**——做成环境变量只会给人调小的机会。
+性质不同，所以一个进 `Settings`，一个留代码常量。
+
+**代码审查结论（两轴并行子代理，基线 `d9a1cb2` → 工作区；改动未提交，故给的是工作区 diff + 新增文件）**
+
+- **Standards 轴**：**无硬违规**。4 条判断题，其中 1 条已修：
+  - ✅ 已修：`tools/verify_auth_e2e.py` 硬编码端口 `8080` 与有效期 `86400` → 改为从仓库 `.env` 读 `NGINX_HOST_PORT` / `TOKEN_EXPIRE_MINUTES`。
+    （否则开发者一改 `.env`，这个脚本就会假失败——正是"绿灯不可信"的反面教材）
+  - 接受不改：`schemas/auth.py` 的 `username max_length=64` 是对齐 DDL 的 `VARCHAR(64)`，不是业务旋钮；做成配置反而可能配出超过列宽的值
+  - 接受不改：`_DUMMY_PASSWORD` 是刻意公开的常量，不是密钥
+- **Spec 轴**：整体忠实（登录不区分原因、凭证失效/过期/伪造/已删一律 401、注册响应只有 `{id, username}`、强度规则与点名、用户名唯一、区分大小写，均达标）。
+  3 项"规格未覆盖"**记录在案、未擅自改规格**，等开发者定：
+  1. `3.3` 真正的越权**写**操作要等 4.1 / 5.2 有接口后才能端到端验（tasks.md 已注明 defer，不是缺陷）
+  2. 用户名**两端去空白归一化**与**长度上限 64 / 非空**：规格未写，是实现在输入层加的规范化
+  3. `GET /api/auth/me`：规格未显式要求，作为 3.3 的受保护接口样本存在
+- **按审查意见加强的测试**：新增 `test_login_does_the_same_hash_work_for_an_unknown_user` —— 用 monkeypatch 计数证明
+  "用户不存在时也**恰好跑一次**校验、入参为 `None`"。比原来只断言"两条路径耗时都 >10ms"更硬：耗时受机器负载影响，
+  这是在断言**机制**而不是旁证。
+
+### D-033 镜像构建每次都全量重下依赖（10 分钟起）—— 待优化，未擅自改
+
+- **现象**：`docker compose up -d --build` 每次都要 10 分钟以上。构建日志显示时间几乎全花在容器内 `pip install` 的
+  `Downloading <wheel>` 上（实测单个 wheel 5~25 秒）。
+- **根因（已核实）**：`backend/Dockerfile` 里设了 `PIP_NO_CACHE_DIR=1`，且 `RUN python -m pip install .` 没有挂 BuildKit
+  缓存挂载 → **构建层缓存一旦失效（例如 `app/` 或 `pyproject.toml` 变了），所有依赖就重新下载一遍**。
+  改代码是本项目的日常动作，所以这个代价每轮都要付。
+- **建议修法（未实施，等你点头）**：给该 RUN 加缓存挂载，并去掉 `PIP_NO_CACHE_DIR`：
+  ```dockerfile
+  RUN --mount=type=cache,target=/root/.cache/pip \
+      python -m pip install --upgrade pip && python -m pip install .
+  ```
+  （`PIP_NO_CACHE_DIR=1` 的初衷是"让镜像小一点"，但实际上 pip 的下载缓存在**构建期**、不进镜像层，
+  去掉它不会让镜像变大。）
+- **为什么不顺手改**：这属构建基础设施变更，且每次验证都要再等一次 10 分钟重建；本组正处在"提交前"的收口阶段，
+  不宜同时动 Dockerfile 与业务代码。建议单独一项做（可放在 W5 收尾或第 5 组需要频繁重建上传接口时）。

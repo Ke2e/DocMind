@@ -8,7 +8,9 @@
 - **周次**：W5（DocMind 第 1 周 / 总周期 W5–W10）
 - **规格基线**：`specs/001-doc-ingest-pipeline/spec.md`（2026-09-12 澄清完成，质量清单 16/16）
 - **在办提案**：`openspec/changes/add-doc-ingest-pipeline`（proposal + specs×3 + design + tasks，`validate --strict` 通过，**35 个任务**）
-- **阶段状态**：任务 0 **完成**；周计划 **已由开发者确认（停机点 2 通过）**；任务 1（运行环境）**进行中**
+- **阶段状态**：任务 0、周计划（停机点 2）、ADR-0001 与 ADR-0002（停机点 3）**均已通过**；
+  **第 1 组（运行环境 1.1–1.6）、第 2 组（数据模型与迁移 2.1–2.2）、第 3 组（账号体系 3.1–3.3）已完成**；
+  `openspec list` → **11/35 tasks**，`openspec validate --strict` → valid；下一项第 4 组（知识库 4.1–4.2）
 
 ## 已冻结的规格要点（Q1–Q5）
 
@@ -28,8 +30,9 @@
 | 0b | OpenSpec 提案流建立 + W5 change 提案 | ✅ 完成 | `openspec validate --strict` 通过，4/4 构件齐备 |
 | 0c | AGENTS.md + constitution + planning 三件套 | ✅ 完成 | constitution v1.1.0；docs 三件套就位 |
 | 0d | ADR-0001（knowledge_bases DDL） | ✅ 已批准 | 2026-09-12 批准，随 W5 落地 |
-| 1 | 运行环境（分层骨架 + compose + 配置系统 + 测试脚手架 + 错误契约） | 🔄 进行中 | 1.2/1.4/1.5/1.6 完成；1.3 容器健康核验中 |
-| 2 | JWT + 用户体系 | 未开始 | 注册/登录可用，接口鉴权生效 |
+| 1 | 运行环境（分层骨架 + compose + 配置系统 + 测试脚手架 + 错误契约） | ✅ 完成 | 6 容器全 healthy + 经 nginx 真请求 200；配置三档校验（缺必需项即失败）；错误契约 `{code,message,detail?}`；pytest 21 passed |
+| 2 | 数据模型与迁移（ADR-0001：5 张表 + Alembic 0001） | ✅ 完成 | 干净库 upgrade→downgrade→upgrade 全通过；`alembic check` 无差异；容器内迁移亦成功 |
+| 3 | JWT + 用户体系（账号体系） | ✅ 完成 | 注册 / 登录 / 鉴权依赖就绪；经 nginx 真请求 **11/11 PASS**；pytest **54 passed, 0 skipped** |
 | 3 | 文档上传（含知识库归属）→ Celery 管线 | 未开始 | 10MB PDF 上传不阻塞 API，状态机进度可查 |
 | 4 | 失败重试（自动 2 + 手动 3）+ 错误回写 | 未开始 | 坏文件 failed 可重试，超限有提示 |
 | 5 | teach：FastAPI / SQLAlchemy / JWT-RBAC / Celery | 未开始 | 笔记入 `notes.md` |
@@ -38,12 +41,15 @@
 
 ## 阻塞项
 
-- **无阻塞**：周计划已于 2026-09-12 确认（停机点 2 通过），可连续实施到下一处停机点（新依赖 / 改 DDL / 改 collection schema）
+- **无阻塞**：周计划（停机点 2）与 ADR-0002（停机点 3）均已通过，可连续实施到下一处停机点（新依赖 / 改 DDL / 改 collection schema）
+- 已解除（2026-09-12）：第 3 组的 JWT 签发库与密码哈希库属"新依赖" → **ADR-0002 已批准并落地**（PyJWT 2.14.0 + argon2-cffi 25.1.0，本地与镜像侧均复核）
 - 已解除：`.env` 缺 `DATABASE_URL` / `REDIS_URL` / `SECRET_KEY` → 按开发默认值补齐（原 7 个模型网关键未改动）
 - 已解除：宿主 8000 / 5432 / 6379 端口已被 OneHub 占用 → compose 用独立 project name + 错开端口（pg 5433 / redis 6380 / nginx 8080）
 
 ## 下一步
 
-1. 完成 1.3 容器健康核验（api / worker / beat / pg / redis / nginx 全 healthy，Milvus 不启动）
-2. 进入第 2 组：SQLAlchemy 模型（5 张表）→ Alembic 迁移（ADR-0001 已批准，不另走停机点）
+1. **第 4 组：知识库**（4.1 创建 / 列表 / 重命名，4.2 非空拒删）—— 无需新依赖，可直接实施
+   - 备注：开发者已点头允许提前做 `6.1 分块算法测试`（零新依赖），但它按 tasks.md 属第 6 组，**暂不跳步**，等第 6 组一并做
+2. 之后按 tasks.md 顺序：5.x 上传受理 → 6.x 后台管线 → 7.x 状态与进度 → 8.x 失败重试与中断补偿 → 9.x 删除清理 → 10.x 验收留档
 3. 每完成一组回写 `docs/progress.md` 证据与 tasks.md 勾选；全部完成再 `/opsx:archive`
+4. **待办**：`docs/HANDOFF.md` 目前仍停留在"第 3 组卡在停机点"的状态，交班前需刷新

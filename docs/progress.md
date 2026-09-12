@@ -228,3 +228,179 @@ DATABASE_URL="postgresql+asyncpg://docmind:<口令>@127.0.0.1:5433/docmind_test"
 - **`docmind_test` 使用约定**：`pytest` 的 `db_schema` fixture 会按 metadata 建表、跑完 drop 表（但保留 `alembic_version` 行）。因此跑完测试若要用 alembic 验库，先复位：
   `docker exec docmind-pg psql -U docmind -d docmind_test -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"`
   再 `DATABASE_URL=…/docmind_test alembic upgrade head`。
+
+## 2026-09-12（第 3 组开工前的停机点：ADR-0002 选型）
+
+> 本次**未实施任何任务**，只产出停机点要求的 ADR。`tasks.md` 仍为 8/35，无勾选变化。
+
+### 开工前基线复核（真实命令，非印象）
+
+| 检查项 | 命令 | 实测结果 |
+|---|---|---|
+| 提交与工作区 | `git log --oneline -3` / `git status --short` | HEAD = **`d9a1cb2`**（第 3 次交接文档），工作区**干净**（无输出） |
+| 任务进度 | `openspec list` | `add-doc-ingest-pipeline  **8/35 tasks**` |
+| 容器 | `docker compose ps` | api / beat / nginx / pg / redis / worker **6/6 running healthy** |
+| **对外链路**（healthy 不算证据） | venv 内 httpx `GET http://127.0.0.1:8080/health/{live,ready}` | `/health/live` → **200** `{"status":"ok"}`；`/health/ready` → **200**，`{"checks":{"database":null,"redis":null}}` |
+| 依赖缺口 | `pip list \| grep -iE "jwt\|jose\|passlib\|argon\|bcrypt\|crypt"` | **0 命中** → 3.1/3.2 所需依赖确实一个都没有 |
+| 依赖声明方式 | `find backend -name "*.txt" -not -path "*/.venv/*"` / 找 lockfile | **均无** → 依赖只在 `pyproject.toml`，镜像走 `pip install .`，故新依赖必须进 `dependencies` 才进镜像 |
+
+### 产出：`docs/adr/0002-auth-libraries.md`（Proposed，待批）
+
+- 决策建议：**PyJWT**（`pyjwt>=2.9`）做凭证签发与校验 + **argon2-cffi**（`argon2-cffi>=23.1`）做密码哈希（argon2id，直接用，**不经 passlib**）
+- 同时定下 4 条配套约定（payload 只放 `sub/iat/exp`、`Authorization: Bearer`、校验失败一律 401 且不区分原因、**用户名不存在时也要跑一次假哈希防时序侧信道**），避免 3.x 实现时各写各的
+- 被否方案 7 个：python-jose / 自研 HS256 / passlib / 直接 bcrypt / stdlib scrypt·pbkdf2 / authlib / RS256
+- 合规声明（AGENTS.md §1 强制）：保护清单不含密码学（原则 I 不冲突，且密码学属"不该自研"）；技术栈清单未列鉴权库（原则 II 下本次属技术栈新增，故须经本 ADR）
+- **明确不改 DDL**：`users.password_hash VARCHAR(255)` 本就是按 argon2id 输出预留（见 `app/models/user.py` 注释），选 argon2id 与任务 2.1 的模型设计一致 → 不触发第二次 DDL 停机点
+
+### 选型事实全部查证（不凭记忆）
+
+| 库 | 最新版 / 发布日 | 结论 |
+|---|---|---|
+| PyJWT | 2.14.0 / 2026-09-11 | 维护活跃（前一天刚发版） |
+| argon2-cffi | 25.1.0 / 2025-06-03 | 维护活跃 |
+| passlib | **1.7.4 / 2020-10-08** | **停更 5 年**；且与 `bcrypt>=4.1` 不兼容（`bcrypt.__about__` 被移除），Gentoo#925289 / Debian#1082011 / pyca/bcrypt#684 均有实证 → **否决** |
+| python-jose | 3.5.0 / 2025-05-28 | CVE-2024-33663 / 33664 **已于 3.4.0 修复**，现行版不受影响（表述须准确，不能当成"现网仍有洞"） |
+
+**可安装性实测**（本机 cp312 / win_amd64）：`pip install --dry-run` 完整闭包 →
+`PyJWT-2.14.0 argon2-cffi-25.1.0 argon2-cffi-bindings-26.1.0 cffi-2.1.1 pycparser-3.0`，
+且 `pip download` 拿到的全是预编译 wheel（`argon2_cffi_bindings-26.1.0-cp310-abi3-win_amd64.whl`、`cffi-2.1.1-cp312-cp312-win_amd64.whl`）→ **Windows 侧无需源码编译**。
+
+> 未验证项：**镜像侧（linux manylinux）未实测**，已写进 ADR 的"批准后动作"第 3 步——`docker compose up -d --build` 后必须进容器 `import jwt, argon2` 复核。
+
+### 停机点状态
+
+- **停在停机点 3（架构级决策）**：等开发者批 ADR-0002。批准前**不安装依赖、不写 3.x 代码**。
+- 未做跳步项 `6.1 先写分块算法测试`（零新依赖但属跳步，需开发者点头），本次**未动**。
+- 本次改动仅 3 个文档文件：新增 `docs/adr/0002-auth-libraries.md`，追加 `docs/progress.md`（本节）、`docs/findings.md`（D-028）。**未提交**。
+
+## 2026-09-12（第 3 组：账号体系）
+
+### 停机点 3 通过：ADR-0002 获批
+
+- 开发者批复「全部批准」→ ADR-0002 状态 **Proposed → Approved**；批准前未装任何依赖、未写 3.x 代码
+- 依赖落地位置：**只有** `backend/pyproject.toml` 的 `dependencies`（仓库无 requirements.txt / lockfile，镜像走 `pip install .`）
+  - 追加 `pyjwt>=2.9`、`argon2-cffi>=23.1`
+- 版本与实测：pyjwt **2.14.0** / argon2-cffi **25.1.0**；argon2id 摘要 **97 字符**、单次哈希 **56ms** / 校验 **55ms**
+  （默认参数 `time_cost=3` / `memory_cost=64MiB` / `parallelism=4`）→ 97 字符落进 `VARCHAR(255)` 余量充足，**不需要改 DDL**
+
+### 交付物
+
+新增（后端）：
+
+- `app/core/security.py` —— argon2id 哈希 + 凭证签发/校验（纯函数，不碰 DB）
+- `app/schemas/auth.py` —— 用户名归一化 + 密码强度校验 + 请求/响应模型
+- `app/services/auth.py` —— 注册 / 校验凭证（哈希与校验走 `asyncio.to_thread`）
+- `app/api/routes/auth.py` —— `POST /api/auth/register`、`POST /api/auth/login`、`GET /api/auth/me`
+
+新增（测试与验收）：
+
+- `tests/test_security.py` —— 算法层单测（哈希、凭证签发/校验的否定用例）
+- `tests/test_auth_api.py` —— 接口层验收（3.1 / 3.2 / 3.3 三组）
+- `tools/verify_auth_e2e.py` —— **经 nginx 的真实 HTTP** 端到端验收脚本（10.1 会并入统一入口）
+
+修改：
+
+- `app/api/deps.py` —— 新增 `get_db_session`（每请求一个事务边界）与 `get_current_user`（鉴权唯一入口）
+- `app/core/errors.py` —— 新增 `UnauthorizedError`
+- `app/main.py` —— 挂载 auth 路由
+- `tests/conftest.py` —— 双账号 fixture（`Account` / `account_factory` / `two_accounts`），补 1.5 遗留项
+
+### 第 3 组任务状态
+
+| 任务 | 状态 | 验证证据 |
+|---|---|---|
+| 3.1 注册接口 | 完成 | 成功 → 201 且响应体只有 `{id, username}`；重复 → 409 `conflict` 且库内用户数仍为 1；5 组弱密码参数化 → 422 且 `detail` 点名具体不满足项、同时断言不产生账号；库内落 `$argon2id$` 摘要，口令原文不入库 |
+| 3.2 登录与凭证签发 | 完成 | 登录换取 token 并立即可访问受保护接口；`expires_in=86400`；payload 断言只有 `sub/iat/exp`；**密码错与用户不存在响应体逐字节相同**且两条路径耗时都 >10ms；过期 / 他人密钥签名 / `alg=none` / `sub` 非数字全部被拒 |
+| 3.3 鉴权依赖 | 完成 | 无凭证 / 格式非法 / 伪造 / 过期 / 账号已删 5 组一律 401 且不区分原因；**归属判据**：带 A 的凭证 + 请求体写 B 的 `user_id` → 探针返回 `authenticated_user_id = A.id`，证明请求体身份被忽略 |
+| （1.5 遗留）双账号 fixture | 完成 | `tests/conftest.py` 走真实注册 + 登录接口构造 `Account`，未直接插库 |
+
+### 证据（可复现命令与输出）
+
+```bash
+# 1) 单测（ASGI 直连）
+cd backend && .venv/Scripts/python.exe -m pytest -q
+# → 54 passed in 13.31s
+#   注意：**0 skipped**（本组开工前为 21 passed）
+#   ⚠️ 断言"0 skipped"不能只看"passed"——`-ra` 的汇总行里没有 skip 才算数
+
+# 2) 端到端（经 nginx 打真实 HTTP；本机无 curl）
+cd backend && .venv/Scripts/python.exe ../tools/verify_auth_e2e.py
+# → 合计 11 项，FAIL 0 项，EXIT=0
+
+# 3) 镜像侧两个新依赖（ADR-0002 的遗留验证项，本次关闭）
+docker exec docmind-api python -c "import importlib.metadata as md; print(md.version('pyjwt'), md.version('argon2-cffi'))"
+# → 2.14.0 25.1.0   （容器内 sys.platform = linux，argon2id 产出 $argon2id$v=19$m=65536,t=3,p=4$…）
+
+# 4) 容器
+docker compose ps --format 'table {{.Name}}\t{{.State}}\t{{.Health}}'
+# → api / beat / nginx / pg / redis / worker 6/6 running healthy
+```
+
+e2e 关键响应原文：
+
+| 检查 | 实测响应 |
+|---|---|
+| 注册成功 | `201 {"id":4,"username":"e2e_3x_…"}` |
+| 用户名重复 | `409 {"code":"conflict","message":"该用户名已被占用，请换一个"}` |
+| 弱密码 | `422 {"code":"validation_error",…,"reason":"Value error, 密码不满足要求：包含数字"}` |
+| 登录失败（两种原因） | `401 {"code":"unauthorized","message":"用户名或密码不正确"}` ×2，逐字节相同 |
+| 无凭证 | `401 {"code":"unauthorized","message":"请先登录"}` |
+| 伪造凭证 | `401 {"code":"unauthorized","message":"登录状态已失效，请重新登录"}` |
+
+### 本轮踩到并修掉的问题（详见 findings）
+
+- **D-029**：前台 `pip install` 被 SIGTERM 中断 → venv 里 **9 个包**变成空壳（`ImportError: … (unknown location)`，`__file__` 为 None 即命名空间包）。
+  修复路径：重命名挪开损坏 venv → 用系统解释器 3.12.3 重建 → 装依赖 → 全量探测 **67/67 可导入**。新增机器级规则：`pip install` / `docker build` / 大套件 pytest 一律后台跑。
+- **D-030**：`OAuth2PasswordBearer` 返回的是**原始 token 字符串**，不是 `HTTPAuthorizationCredentials`（那是 `HTTPBearer` 的返回类型）→ 7 个用例同时变红（本该 401 的请求变成 500）。测试一次就抓住。
+- **D-031**：容器刚重建完就发写请求，那一轮的注册行没落库（id=1 缺失，之后的 id=2/3/4 都正常）。
+  教训：**写操作的端到端验收要等容器稳定后再跑**；**"成功"以查库为准，不能只看接口回了 201**（当时 11/11 全绿，完全看不出问题）。
+
+### 数据与环境收尾（已复核）
+
+- 开发库 `docmind`：验收用 `e2e_*` / `probe_*` 账号已 `DELETE` 清理，`SELECT count(*) FROM users` → **0**
+- 测试库 `docmind_test`：public schema 仅剩 `alembic_version`（pytest 的 `db_schema` fixture 约定，非残留）
+- 损坏的 `backend/.venv.damaged-20260912` 已删除；新 `backend/.venv` 全量探测 67/67 可导入
+- 本次改动**未提交**
+
+### 两项"规格未规定"已由开发者定案（2026-09-12，本人作答）
+
+| 项 | 结论 | 落地 |
+|---|---|---|
+| 用户名大小写 | **区分大小写**（保持现状，零行为改动） | 写进 `user-auth` 规格 Requirement + 新增「用户名区分大小写」场景；测试 `test_register_is_case_sensitive_on_username` |
+| 密码长度上限 | **上限 128 字符** | 配置 `PASSWORD_MAX_LENGTH=128`（`.env.example` 同步）；`schemas/auth.py` 校验并点名；超限用例 + **恰好 128 必须通过**的边界用例 |
+
+改规格走了 `openspec-update-change` 流程，触及 2 处规划件：`specs/user-auth/spec.md`（Requirement 1 处 + 场景 1 处）
+与 `tasks.md`（业务参数清单 1 处 + 强度规则 1 处）；proposal / design 无涉及，已 grep 确认。
+改完 `openspec validate add-doc-ingest-pipeline --strict` → **valid**。
+
+> 说明：上限进 `Settings`、而 argon2 的 `time_cost`/`memory_cost` 不进（ADR-0002 D2）——前者是输入护栏，后者是抗爆破旋钮，性质不同。
+
+### 本组代码审查（第 3 组提交前，走 AGENTS.md §4 门禁）
+
+两轴并行子代理审查（基线 `d9a1cb2` → 工作区）：
+
+| 轴 | 结论 | 处置 |
+|---|---|---|
+| Standards（对 `AGENTS.md` / constitution / 两个 ADR / findings） | **无硬违规**；4 条判断题 | 1 条已修：`tools/verify_auth_e2e.py` 硬编码端口 `8080` 与 `86400` → 改为从 `.env` 读 `NGINX_HOST_PORT` / `TOKEN_EXPIRE_MINUTES`；2 条论证后接受不改（`username max_length=64` 对齐 DDL、`_DUMMY_PASSWORD` 非密钥） |
+| Spec（对 `specs/user-auth/spec.md` + tasks 3.x + design D10 + ADR-0002 D4） | 整体忠实 | 3 项"规格未覆盖"记录在案、**未擅自改规格**，见下 |
+
+**Spec 轴记录的 3 项规格未覆盖（等开发者定，未擅自改）**：
+
+1. `3.3` 的越权**写**操作要等 4.1 / 5.2 有接口后端到端验（tasks.md 已注明 defer，非缺陷）
+2. 用户名**两端去空白归一化**与**长度上限 64 / 非空** —— 规格未写，是实现在输入层加的规范化
+3. `GET /api/auth/me` —— 规格未显式要求，作为 3.3 的受保护接口样本存在
+
+**按审查意见加强的测试**：`test_login_does_the_same_hash_work_for_an_unknown_user` —— monkeypatch 计数证明
+"用户不存在时也恰好跑一次校验、入参为 `None`"，比原先只断言"两条路径耗时都 >10ms"更硬（在断言机制而非旁证）。
+测试总数 **54 → 58**（均为 0 skipped）。
+
+### 交接材料刷新（第 4 次交接，2026-09-12）
+
+- `docs/HANDOFF.md`：整体重写到第 3 组完工状态 —— 当前状态（含"未提交"改动清单）、下一步第 4 组与 D-024 衔接点、
+  环境速查表新增 4 行（重命令被 SIGTERM 掐断 / pip 中断打残 venv / PowerShell 不回显 / 换容器窗口写请求不可信）、
+  决策表新增 ADR-0002 与凭证契约、工件地图补本组新增文件、待办新增"无 lockfile"与"两个未规定项"
+- `docs/新会话提示词.md`：主提示词同步到 11/35（第 3 组完工、下一站第 4 组），环境段与工程纪律段补入第 3 组的坑；
+  变体 C 的进度数字由 8/35 更新为 11/35
+- 核验方式：对两份文件 grep 过期残留词（`第 3 次交接` / `8/35` / `21 passed, 0 skipped` / `卡在停机点上` /
+  `先出 ADR-0002` / `1.3 容器健康核验中`）→ 均为 0 命中（HANDOFF 里 1 处"第 3 次交接"是提交信息的历史引用）；
+  再 grep 新事实锚点（`11/35` / `54 passed` / `11/11 PASS` / `未提交` / `ADR-0002` / `D-031`）→ 全部命中

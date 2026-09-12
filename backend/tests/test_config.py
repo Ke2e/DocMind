@@ -82,6 +82,7 @@ def test_business_params_have_defaults(clean_env: None, tmp_path: Path) -> None:
     assert settings.AUTO_RETRY_MAX == 2
     assert settings.MANUAL_RETRY_MAX == 3
     assert settings.PASSWORD_MIN_LENGTH == 8
+    assert settings.PASSWORD_MAX_LENGTH == 128
 
 
 def test_business_params_are_overridable(clean_env: None, tmp_path: Path) -> None:
@@ -92,6 +93,7 @@ def test_business_params_are_overridable(clean_env: None, tmp_path: Path) -> Non
             "CHUNK_OVERLAP_TOKENS": "32",
             "MAX_UPLOAD_MB": "10",
             "ALLOWED_EXTENSIONS": "PDF, .txt",
+            "PASSWORD_MAX_LENGTH": "64",
         },
     )
     settings = load_settings(env_file=env_file)
@@ -99,6 +101,7 @@ def test_business_params_are_overridable(clean_env: None, tmp_path: Path) -> Non
     assert settings.CHUNK_SIZE_TOKENS == 256
     assert settings.CHUNK_OVERLAP_TOKENS == 32
     assert settings.max_upload_bytes == 10 * 1024 * 1024
+    assert settings.PASSWORD_MAX_LENGTH == 64
     # 白名单归一化：大小写无关、可带前导点
     assert settings.allowed_extensions == frozenset({"pdf", "txt"})
 
