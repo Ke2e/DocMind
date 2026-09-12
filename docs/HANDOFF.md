@@ -1,30 +1,39 @@
 # DocMind 开发交接文档
 
-**交接时间**：2026-09-12
-**交接范围**：W5（第 1 周）任务 0 全部完成，任务 1 待开工
+**交接时间**：2026-09-12（第 2 次交接）
+**交接范围**：W5（第 1 周）任务 0 完成 + 第 1 组运行环境（1.2–1.6）完成，从 2.1 开工
 **给下一个会话**：读完本文 + `AGENTS.md` 即可接手，不需要回溯聊天记录
 
 ---
 
 ## 一、当前状态（一句话）
 
-W5 的规格、提案、治理文件、环境变量、git 仓库、验收语料都已就位；
-**卡在停机点 2，等开发者确认周计划后开始写代码**。
+停机点 2 **已通过**（周计划定格 **35 项**）；第 1 组运行环境已完成并提交 `b531d27`（工作区干净）；
+容器全家桶 **6/6 healthy** 在跑（pg 5433 / redis 6380 / nginx 8080）；
+**下一项是 2.1 数据模型**，其后 2.2 迁移、3.x 账号体系依次跟上。
+
+**最近一次提交拓扑**
+
+| 提交 | 内容 |
+| --- | --- |
+| `b531d27` | 第 1 组运行环境落地（1.2–1.6） |
+| `ad2e410` | 新增新会话开工提示词 |
+| `bd6e9f6` | 配置对齐实际网关并补齐交接文档与验收语料 |
+| `d34b36b` | 初始化仓库并落地 W5 规格基线与 OpenSpec 提案 |
 
 ---
 
 ## 二、下一步从哪开始
 
-1. **确认周计划**：`openspec/changes/add-doc-ingest-pipeline/tasks.md`（10 组 / 32 项，每项带验证方式）
-   - 开发者可能有增删 → 改完后再动工
-2. 确认后执行 `/opsx:apply`（或直接按 1.1 → 1.2 … 顺序实施）
-3. 首项开工内容是 **1.1 初始化 git 已完成，从 1.2 开始**：
-   - 1.2 搭 `backend/` 分层骨架
-   - 1.3 Docker Compose（Milvus 走可选 profile，默认不启动）
-   - 1.4 配置系统（`.env` / `.env.example` 已就位，按其中分组实现加载与校验）
-
-> ⚠️ 1.1（git 初始化）在 2026-09-12 已由交接方完成，可直接勾掉：
-> `git init -b main` + 首次提交 `d34b36b`，43 个文件入库，`.env` 等已按 `.gitignore` 排除。
+1. **周计划已确认**（2026-09-12）：开发者逐条过完 32 项，并拍板四项待定项 → `tasks.md` 变为 **35 项**
+   - 新增 1.5 测试脚手架 / 1.6 统一错误契约 / 5.4 片段反查接口
+   - 原 4.3（文档归属约束）移入第 5 组（它依赖 5.1 的上传接口，无法先验）
+   - 1.4 补全业务参数外置清单；6.2 验证口径改写；10.2 改为逐组回写证据
+2. **从 2.1 开始**（第 1 组已全部完成，见 `docs/progress.md` 的「第 1 组完成」一节）
+   - 2.1 定义 5 张表模型：`users` / `knowledge_bases` / `documents` / `chunks` / 处理任务表
+   - 2.2 Alembic 迁移（新增文件，不改历史版本），在 `docmind_test` 干净库上验 upgrade / downgrade
+3. 第 2 组**没有停机点**：ADR-0001 已批准，迁移只新增文件
+4. ⚠️ **第 3 组会遇到停机点**：注册与登录需要 JWT 签发库与密码哈希库，属"新依赖"→ 必须先出 ADR 等开发者批准
 
 ---
 
@@ -36,11 +45,20 @@ W5 的规格、提案、治理文件、环境变量、git 仓库、验收语料�
 | `git.exe` 不在 PortableGit/bin | `git: command not found` | 需把 `.../PortableGit/versions/1.2.0/cmd` 加进 PATH |
 | 沙箱只允许写工作区内 | 往 `C:\Users\ASUS\.workbuddy\...` 建 venv 静默失败（exit 0 但无目录） | 依赖装进项目内 `.venv/`（已在 .gitignore） |
 | PowerShell 工具不回显 stdout | 命令 exit 0 却看不到输出 | 改用 Bash；必须用 PS 时改看退出码 + 之后用 Glob/Read 核验 |
+| **`docker.exe` 不在 PATH** | `docker: command not found` | Docker Desktop 装在 **`D:\Docker\App`**（非默认路径），把 `/d/Docker/App/resources/bin` 前置进 PATH |
+| **本机没有 `curl`** | HTTP 探针全部失败 | 用 `backend/.venv/Scripts/python.exe` + httpx 打真实请求 |
+| **裸 `python` 不在 PATH** | `python: command not found` | 一律写全路径（`backend/.venv/Scripts/python.exe`） |
+| **本机无本地 PostgreSQL / psql** | 连不上库 | 数据库只能走 compose 起的 pg（宿主 `127.0.0.1:5433`） |
+| **宿主端口已被别的项目占用** | `up` 后连错服务 | OneHub 占 8000/5432/6379；既有 Milvus（project `lk_ai`）占 9000-9001/9091/19530 → DocMind 用独立 project name `docmind` + pg 5433 / redis 6380 / nginx 8080 |
+| **`docker compose ps` 报 healthy 不等于链路可用** | 六容器全绿但经 nginx 是 502 | 凡"链路通"的结论**必须打真实请求**验证 |
+| **nginx 只在启动时解析一次上游主机名** | api 容器重建换 IP 后 nginx 持续 502 | 已修：`docker/nginx.conf` 用 `resolver 127.0.0.11 valid=10s` + 变量化 `proxy_pass` |
+| **同批并行编辑同一文件会丢改动** | 字段没落盘，worker/beat 反复重启 | 同一文件的编辑串行执行，改完复核内容 |
+| **宿主端口映射被 Compose 覆盖**（自定义 host 名无法从宿主直连） | 宿主跑 alembic / pytest 连不上 `pg` | `.env` 里 host 用 `127.0.0.1:5433`（宿主视角），容器内由 compose 覆盖为 `pg:5432` |
 
 **统一 PATH 前缀（建议每条 Bash 命令都用）：**
 
 ```bash
-export PATH="/c/Users/ASUS/.workbuddy/binaries/PortableGit/versions/1.2.0/cmd:/c/Users/ASUS/.workbuddy/binaries/PortableGit/versions/1.2.0/bin:/c/Users/ASUS/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/d/nvm/nodejs:/usr/bin:/bin"
+export PATH="/d/Docker/App/resources/bin:/c/Users/ASUS/.workbuddy/binaries/PortableGit/versions/1.2.0/cmd:/c/Users/ASUS/.workbuddy/binaries/PortableGit/versions/1.2.0/bin:/c/Users/ASUS/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/d/nvm/nodejs:/usr/bin:/bin"
 ```
 
 **已就绪的工具**
@@ -48,7 +66,10 @@ export PATH="/c/Users/ASUS/.workbuddy/binaries/PortableGit/versions/1.2.0/cmd:/c
 - `openspec` v1.11.0（`D:\nvm\nodejs` → nvm v24.9.0）
 - `specify`（spec-kit）v1.0.1 —— 仅历史用途，不再驱动开发
 - git 2.55.0，全局身份 `Asize <3238075590@qq.com>`
-- `.venv/`（Python 3.13.14）+ reportlab / python-docx / pillow / pypdf（**只用于生成验收语料**，与后端运行时依赖无关）
+- Docker Desktop（CLI 29.7.2 / daemon linux / compose v5.3.1）—— 已常驻 `docmind` 栈
+- **两个虚拟环境，勿混用**：
+  - 仓库根 `.venv/`（Python 3.13.14）+ reportlab / python-docx / pillow / pypdf —— **只用于生成验收语料**（`tools/gen_acceptance_corpus.py`）
+  - `backend/.venv/`（Python 3.12.3，系统解释器 `D:\IDE\Python\Python312`）—— 后端运行时与测试，已装齐 FastAPI / SQLAlchemy / asyncpg / Alembic / Celery / redis / pypdf / python-docx / tiktoken / pytest / pytest-asyncio / httpx
 
 ---
 
@@ -75,6 +96,14 @@ export PATH="/c/Users/ASUS/.workbuddy/binaries/PortableGit/versions/1.2.0/cmd:/c
 ```
 AGENTS.md                               AI 运行时规则（会话启动必读）
 .env / .env.example                     真实密钥 / 可提交样例（.env 已被忽略）
+backend/                                后端代码：app/{core,api,models,schemas,services,workers} + tests + Dockerfile + pyproject
+    ├── app/core/config.py              配置系统（必需 3 / 占位 7 / 业务参数，缺必需项即失败）
+    ├── app/core/errors.py              统一错误响应契约 {code, message, detail?}
+    ├── app/api/routes/health.py        /health/live（不碰外部依赖）与 /health/ready（探 pg+redis）
+    ├── app/workers/celery_app.py       Celery 应用 + beat 心跳调度
+    └── tests/conftest.py               测试脚手架（配置隔离 / 双客户端 / 测试库 schema 建销毁）
+docker-compose.yml                      api / worker / beat / pg / redis / nginx；Milvus 走 milvus profile（默认不启动）
+docker/nginx.conf                       反代 api；用 Docker 内置 DNS 按 TTL 重解析上游
 .gitignore / .gitattributes             忽略规则（含 .env、.venv、.codebuddy、.workbuddy、fixtures/acceptance）
 openspec 产物 ↓
 openspec/config.yaml                     schema: spec-driven，语言 zh-CN
@@ -84,7 +113,7 @@ openspec/changes/add-doc-ingest-pipeline/
     ├── specs/knowledge-base/spec.md     知识库 CRUD、归属约束、非空拒删
     ├── specs/document-ingest/spec.md    上传受理、四格式与 50MB、异步管线、状态与进度、重试、删除级联
     ├── design.md                        D1–D9 技术决策 + 风险 + 迁移计划 + 开放问题
-    └── tasks.md                         10 组 / 32 项实施清单（每项含验证方式）
+    └── tasks.md                         10 组 / 35 项实施清单（每项含验证方式；1.1–1.6 已完成）
 .specify/memory/constitution.md          项目宪法 v1.1.0（保护清单 / 技术栈 / 停机点）
 specs/001-doc-ingest-pipeline/spec.md    W5 规格基线（19 FR / 9 SC / 5 US），冻结
 docs/PROJECT_CONTEXT.md                  项目简报（已修正过期的模型名）
@@ -203,7 +232,13 @@ fixtures/acceptance/                     实际语料（已忽略，不入库）
 2. **`.codebuddy/` 与 `.workbuddy/` 未入库**（含会话数据风险，且可由 `openspec update` 重建）。
    换机器时需重跑 `openspec init --tools codebuddy --language zh-CN`。
 3. **`.specify/` 入库但已停用**，保留作历史与宪法来源；新会话不要被它误导回 spec-kit 流程。
-4. 环境准备（Docker Desktop、`.env` 里数据库/缓存/签名密钥）由开发者本地完成，
-   模型密钥 W5 期间可留空（只告警不阻断）。
-5. 未验证项：`RERANK_BASE_URL` 的 `parameters.top_n` 语义（返回条数）已实测有效，
+4. **环境准备已完成（2026-09-12）**：Docker Desktop 已装且在跑；`.env` 已补齐三个必需项
+   （`DATABASE_URL` / `REDIS_URL` / `SECRET_KEY`）与 `POSTGRES_*`、三个宿主端口变量。
+   `SECRET_KEY` 为随机 32 字节，可随时替换；数据库口令是本地开发默认值 `docmind_dev_pw`。
+   模型密钥 W5 期间不需要（缺失只告警不阻断）。
+5. **新增风险：DDL 落地前的库不一致** —— compose 起的 `docmind` 库当前**没有任何表**；
+   2.2 需另建 `docmind_test` 干净库用于验证 upgrade / downgrade。
+6. 未验证项：`RERANK_BASE_URL` 的 `parameters.top_n` 语义（返回条数）已实测有效，
    但 `top_n` 与 `return_documents` 之外的参数（如 `max_chunks_per_doc`）未测，W7 做重排时先小样验证。
+7. **后端依赖清单尚未引入 JWT 签发库与密码哈希库** —— 第 3 组（账号体系）会用到，
+   属"新依赖"停机点，必须先出 ADR 等开发者批准，不要自行选型。
