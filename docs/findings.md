@@ -84,3 +84,54 @@
 ### D-016 git 仓库已建立
 - `git init -b main`，首次提交 `d34b36b`，43 个文件入库。
 - `.gitignore` 排除：`.env`、`.venv/`、`.codebuddy/`、`.workbuddy/`、`fixtures/acceptance/`、Python/Node 产物；已用 `git check-ignore -v` 逐条核验命中。
+
+### D-017 周计划确认（2026-09-12，停机点 2 通过）
+开发者逐条确认 32 项计划，并拍板四个待定项：
+
+| 待定项 | 结论 |
+|---|---|
+| 计划增补 | **全部采纳** → tasks.md 由 32 项变 **35 项** |
+| 宿主端口 | **独立端口**：pg 5433 / redis 6380 / nginx 8080，api 容器内 8000 不映射宿主 |
+| 同库文档同名 | **允许**（靠 doc id 区分，不加唯一约束 → 不触发 DDL 停机点） |
+| 注册密码强度 | 长度 **≥8 且同时包含字母与数字**（阈值可配置，写入 user-auth spec） |
+
+增补明细：新增 1.5 测试脚手架、1.6 统一错误契约、5.4 片段反查接口；原 4.3（文档归属约束）移入第 5 组；1.4 补全业务参数外置清单；6.2 验证口径改写；10.2 改为逐组回写证据。
+
+### D-018 为什么这 3 项必须新增任务（不是可选项）
+- **1.5 测试脚手架**：6.1 要求"先写测试"、3.x–5.x 的验收方式全是"接口测试"，但原计划没有任何一项建 pytest 脚手架 → 后续任务的"验证方式"无处落地。
+- **1.6 错误响应契约**：7.2 要求"响应不含堆栈或内部实现细节"，没有统一出口无法逐处保证 → 定为 `{code, message, detail?}`，并覆盖框架默认 404 / 422。
+- **5.4 片段反查接口**：FR-005 与 document-ingest spec 的"反查片段"场景要求按文档反查全部片段，原 5.3 只做列表与详情（含数量）→ 缺接口。
+- **顺序修正**：原 4.3 验的是"上传时的 kb_id 归属校验"，而上传接口到 5.1 才存在 → 无法先验。
+
+### D-019 6.2 的验收判据与重叠参数自相矛盾（口径修正）
+默认 512 / 重叠 64 时，相邻片段**必然**共享边界文本，"拼接后与原文比对无丢字"隐含"无重复"，与 overlap 直接冲突（SC-006 的"无重复段"同样歧义）。判据改为三项：**覆盖性**（原文每个 token 位置至少被一个片段包含）/ **顺序性**（按 `chunk_index` 升序与原文一致）/ **忠实性**（每个片段是原文的连续子串）。SC-006 的"无重复段"据此解释为"无重复片段"，而非"文本不重复"。已写入 design.md D5。
+
+### D-020 本机 Docker 与端口冲突实测（2026-09-12）
+- Docker Desktop 装在 **`D:\Docker\App`（非默认路径）**，CLI 29.7.2，daemon 正常（linux 容器），compose v5.3.1；`docker.exe` 不在 PATH，需把 `/d/Docker/App/resources/bin` 加进去。
+- 宿主端口占用：OneHub 栈占 **8000 / 5432 / 6379**；既有 Milvus（compose project `lk_ai`）占 **9000-9001 / 9091 / 19530** → DocMind 用独立 project name `docmind` 并错开端口。
+- 本机**无本地 PostgreSQL、无 psql**，也**无 `curl`** → 后端验证改用 venv 内 httpx 发真实 HTTP 请求。
+
+### D-021 `.env` 原先缺三个必需项
+- 实测 `.env` 只有 7 个模型网关键，缺 `DATABASE_URL` / `REDIS_URL` / `SECRET_KEY` → 按 1.4 的设计应用会拒绝启动，compose 也无法建库。
+- 按开发默认值追加（**仅追加缺失键，原 7 行未改动**）：`POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`、`PG_HOST_PORT=5433`、`REDIS_HOST_PORT=6380`、`NGINX_HOST_PORT=8080`、`DATABASE_URL`、`REDIS_URL`、`SECRET_KEY`（32 字节随机）。`.env` 仍被 gitignore，`git check-ignore -v .env` 复核通过。
+- 一份 `.env` 服务两个场景：容器内由 compose 把 host 覆盖为服务名（pg:5432 / redis:6379），宿主侧直连走 127.0.0.1:5433 / 6380。
+
+### D-022 Python 版本与虚拟环境
+- 后端必须 Python 3.12（技术栈锁定）→ 用系统解释器 `D:\IDE\Python\Python312`（3.12.3）建 **`backend/.venv`**（gitignore 命中）。
+- 仓库根原有 `.venv`（3.13.14）**只用于生成验收语料**，与后端运行时无关，两个环境不要混用。
+
+### D-023 编排与工具链的三个真实坑（2026-09-12 实测踩到并修掉）
+
+**1. nginx 只在启动时解析一次上游主机名** —— 首次 `up` 后 `api` 容器 IP 为 172.20.0.6；第二次 `up --build` 重建 api 后 IP 变化，nginx 仍连旧 IP，于是**对外持续 502**。
+- 修法：`docker/nginx.conf` 声明 Docker 内置 DNS 并变量化 `proxy_pass`，强制按 TTL 重新解析：
+  ```nginx
+  resolver 127.0.0.11 valid=10s ipv6=off;
+  location / { set $upstream_api http://api:8000; proxy_pass $upstream_api; }
+  ```
+- **配套教训：容器自报 `healthy` 不等于对外链路可用**。当时 `docker compose ps` 六个容器全绿，但经 nginx 打真实请求是 502——nginx 的健康检查已连续失败，只是还没跑满 `retries: 12 × 10s` 没翻成 unhealthy。**凡"链路可用"的结论，必须打真实请求验证，不能只看容器状态。**
+
+**2. Celery `-A` 的写法** —— `-A app.workers.celery_app` 依赖 Celery 回退扫描模块变量找 Celery 实例（能找到但不明确）；显式写 `app.workers.celery_app:celery_app` 更稳，已统一。健康检查命令同理。
+
+**3. beat 没有内置健康端点** —— 用「心跳任务写进 Redis 的键是否还在」做探针：beat 每 `BEAT_HEARTBEAT_INTERVAL_SECONDS` 触发 `beat_heartbeat`，worker 执行后 `SETEX docmind:beat:heartbeat`（TTL = 3 个周期）。这一条探针同时覆盖 beat → broker → worker → redis 整条链路，比 `kill -0 1` 之类的进程级伪探针有意义。
+
+**4. 同批并行编辑同一文件会丢改动** —— 给 `config.py` 加 `BEAT_HEARTBEAT_INTERVAL_SECONDS` 的编辑与另一处编辑同批提交，前者未落盘，导致 worker / beat 反复重启（`'Settings' object has no attribute 'BEAT_HEARTBEAT_INTERVAL_SECONDS'`）。**规则：同一文件的编辑串行执行，改完必须复核内容。**

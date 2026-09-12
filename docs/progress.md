@@ -76,3 +76,82 @@
 - **交接文档**：`docs/HANDOFF.md`（含环境坑、决策表、工件地图、网关实况、语料结果、建议 skills）。
 - `tasks.md` 1.4 由"两家服务商"改写为实际网关配置项；`docs/PROJECT_CONTEXT.md` 模型行同步。
 - 复核：`openspec validate --strict` 仍 valid。
+
+## 2026-09-12（停机点 2 通过 + 第 1 组实施）
+
+### 计划确认（开发者本人作答，未代答）
+
+| 待定项 | 结论 |
+|---|---|
+| 计划增补（1.5 / 1.6 / 5.4 + 顺序与口径修正） | 全部采纳 |
+| 宿主端口 | 独立端口：pg 5433 / redis 6380 / nginx 8080 |
+| 同一知识库内文档同名 | 允许 |
+| 注册密码强度 | ≥8 位且同时包含字母与数字 |
+
+规划件同步修订（`openspec-update-change` 流程）：
+
+- `tasks.md`：32 项 → **35 项**，1.1 带证据勾选
+- `specs/user-auth/spec.md`：密码强度阈值写进 Requirement 与场景（否则 3.1 无法客观验收）
+- `design.md`：D5 补重叠语义与"覆盖性/顺序性/忠实性"判据、D9 补宿主端口约束、新增 D10（错误契约 + 测试脚手架）
+- 复核：`openspec validate add-doc-ingest-pipeline --strict` → **valid**；`openspec list` → **1/35 tasks**
+
+### 环境探测（实测，非推测）
+
+- Docker Desktop 位于 `D:\Docker\App`（非默认路径），CLI 29.7.2 / daemon linux / compose v5.3.1
+- 端口冲突：OneHub 占 8000 / 5432 / 6379；既有 Milvus（project `lk_ai`）占 9000-9001 / 9091 / 19530
+- 本机无本地 PostgreSQL / psql / curl → HTTP 验证改用 venv 内 httpx
+- `.env` 原缺 `DATABASE_URL` / `REDIS_URL` / `SECRET_KEY` → 仅追加缺失键补齐（原 7 行未改），`git check-ignore -v .env` 复核仍忽略
+
+### 任务 1.2 后端分层骨架
+
+- `backend/`：`app/core`（config / errors / db）、`app/api`（deps / routes）、`app/models`（base）、`app/schemas`、`app/services`、`app/workers`，另有 `tests/`、`Dockerfile`、`pyproject.toml`
+- Python 3.12.3 虚拟环境 `backend/.venv`（系统解释器 `D:\IDE\Python\Python312`），依赖装齐
+- 证据：`uvicorn app.main:app --port 8001` 启动成功（日志 `Application startup complete.`）；`GET /health/live` → 200 `{"status":"ok"}`；`GET /health/ready` → 503（彼时 pg/redis 未起，逐个报不可用）
+
+### 任务 1.3 Docker Compose
+
+- `docker-compose.yml`（project name `docmind`）：api / worker / beat / pg / redis / nginx；Milvus 三件套列在 `milvus` profile，默认不启动
+- `docker/nginx.conf`（反代 api，`client_max_body_size 60m` 略大于应用 50MB 上限）、`backend/Dockerfile`、`backend/.dockerignore`
+- `backend/app/workers/celery_app.py`：Celery 应用 + beat 心跳调度；`tasks.py`：心跳任务写 `docmind:beat:heartbeat`（TTL = 3 个周期）
+- beat 无内置健康端点 → 用「心跳键是否存在」做真探针，实际覆盖 beat → broker → worker → redis 整条链路
+- 证据：`docker compose config --quiet` 通过；`docker compose config --services` 为 api/worker/beat/pg/redis/nginx（**不含** Milvus）；加 `--profile milvus` 才出现 milvus-etcd/minio/standalone
+
+### 任务 1.4 配置系统
+
+- `backend/app/core/config.py`：三档配置（必需 3 项 / 占位 7 项 / 业务参数 16 项），业务参数全部可配置且有默认值
+- 缺失必需项 → `ConfigError` 并列出缺哪几项；只缺占位项 → 启动并打印告警；模型名与地址全部从配置读
+- 证据：`pytest -q` → **11 passed**
+- 进程级证据：清空 `DATABASE_URL` / `REDIS_URL` / `SECRET_KEY` 且不读 `.env` 时输出
+  `ConfigError -> 配置缺失，应用无法启动：DATABASE_URL、REDIS_URL、SECRET_KEY（读取自 …\.env 或环境变量；请参考 .env.example 补齐）`
+- 机器核查：`tests/test_config.py::test_no_hardcoded_model_or_endpoint_in_app_source` 扫描 `backend/app/**/*.py`，禁止出现模型名与服务商地址字面量 → 通过
+
+### 任务 1.5 测试脚手架 / 任务 1.6 错误响应契约
+
+- `tests/conftest.py`：配置隔离（环境变量顶掉 `.env`）、应用与 httpx 客户端 fixture、`raw_client`（容忍应用内异常，用于验 500 响应体）、测试库 schema 建/销毁 fixture（库不可达则 skip 而非假通过）
+- `tests/test_health.py`、`tests/test_error_contract.py`、`tests/test_config.py`
+- 错误契约证据：框架 404 / 422 / 未捕获异常 / 业务异常四条路径响应体均为 `{code, message, detail?}`；未捕获异常返回 500 且不含 `Traceback` / `site-packages` / SQL 等内部细节
+
+### 第 1 组任务状态
+
+| 任务 | 状态 | 验证证据 |
+|---|---|---|
+| 1.1 git 初始化 | 完成（前期） | `git log` 3 次提交、工作区干净 |
+| 1.2 后端分层骨架 | 完成 | uvicorn 启动 `Application startup complete.`；`/health/live` → 200；pg/redis 未起时 `/health/ready` → 503 并逐项报因，就位后 → 200 |
+| 1.3 Docker Compose | **完成** | `docker compose ps` → **6/6 healthy**；`docker ps -a --filter name=docmind-milvus` → **0**；经 nginx `:8080` 打真实请求 `/health/live` → 200、`/health/ready` → 200；beat 心跳键存在、worker 每 30s 消费；OneHub 栈未受影响 |
+| 1.4 配置系统 | 完成 | `pytest -q` 11 passed；缺必需项进程级报 `ConfigError`（点名三项）；只缺占位项启动并告警；源码扫描无硬编码模型名与地址 |
+| 1.5 测试脚手架 | 完成 | `pytest -q` 可跑通；测试库 schema 建/销毁 fixture 就位（等 2.x 建表后启用）；接口测试不依赖 Celery |
+| 1.6 错误响应契约 | 完成 | 404 / 422 / 500 / 业务异常四条路径均返回 `{code, message, detail?}`；500 响应体无内部细节标记词 |
+
+### 第 1 组完成（2026-09-12）
+
+- **1.3 端到端证据（可复现命令）**：
+  - `docker compose up -d --build` → `docker compose ps --format 'table {{.Name}}\t{{.State}}\t{{.Health}}'` → api / beat / nginx / pg / redis / worker 六项全 `running healthy`
+  - `docker compose config --services`（默认）→ 无 Milvus；`docker compose --profile milvus config --services` → 出现 milvus-etcd / minio / standalone（证明 profile 隔离）
+  - 经 nginx 打真实请求（本机无 curl，用 venv 内 httpx）：`GET http://127.0.0.1:8080/health/ready` → `200 {"status":"ok","checks":{"database":null,"redis":null}}`
+  - `docker exec docmind-redis redis-cli --scan --pattern 'docmind:beat:*'` → `docmind:beat:heartbeat`；`ttl` → 79；worker 日志每 30s 一条 `Task app.workers.tasks.beat_heartbeat ... succeeded`
+- **修掉的两个容器化坑（详见 findings D-023）**：
+  - nginx 启动时只解析一次上游主机名，api 容器重建换 IP 后对外持续 502（而 `docker compose ps` 仍报 healthy）→ 改用 Docker 内置 DNS `127.0.0.11` + 变量化 `proxy_pass` 按 TTL 重解析
+  - worker / beat 反复重启，根因是 `BEAT_HEARTBEAT_INTERVAL_SECONDS` 字段因同批并行编辑未落盘 → 串行修补并复核
+- **新增运行资产**：`docker-compose.yml`、`docker/nginx.conf`、`backend/Dockerfile`、`backend/.dockerignore`、`backend/app/workers/celery_app.py`、`backend/app/workers/tasks.py`
+
+> 待办：1.5 的"双账号 fixture"依赖 `users` 模型，随 3.x 落地补齐（已在 tasks.md 标注依赖关系）。

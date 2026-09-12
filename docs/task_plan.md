@@ -7,8 +7,8 @@
 
 - **周次**：W5（DocMind 第 1 周 / 总周期 W5–W10）
 - **规格基线**：`specs/001-doc-ingest-pipeline/spec.md`（2026-09-12 澄清完成，质量清单 16/16）
-- **在办提案**：`openspec/changes/add-doc-ingest-pipeline`（proposal + specs×3 + design + tasks，`validate --strict` 通过，32 个任务）
-- **阶段状态**：任务 0 **完成**；周计划已产出，**等开发者确认（停机点 2）**后开始任务 1
+- **在办提案**：`openspec/changes/add-doc-ingest-pipeline`（proposal + specs×3 + design + tasks，`validate --strict` 通过，**35 个任务**）
+- **阶段状态**：任务 0 **完成**；周计划 **已由开发者确认（停机点 2 通过）**；任务 1（运行环境）**进行中**
 
 ## 已冻结的规格要点（Q1–Q5）
 
@@ -28,22 +28,22 @@
 | 0b | OpenSpec 提案流建立 + W5 change 提案 | ✅ 完成 | `openspec validate --strict` 通过，4/4 构件齐备 |
 | 0c | AGENTS.md + constitution + planning 三件套 | ✅ 完成 | constitution v1.1.0；docs 三件套就位 |
 | 0d | ADR-0001（knowledge_bases DDL） | ✅ 已批准 | 2026-09-12 批准，随 W5 落地 |
-| 1 | 脚手架复用 OneHub 模式 + compose 加 Milvus | 未开始 | 全家桶健康（Milvus 走可选 profile） |
+| 1 | 运行环境（分层骨架 + compose + 配置系统 + 测试脚手架 + 错误契约） | 🔄 进行中 | 1.2/1.4/1.5/1.6 完成；1.3 容器健康核验中 |
 | 2 | JWT + 用户体系 | 未开始 | 注册/登录可用，接口鉴权生效 |
 | 3 | 文档上传（含知识库归属）→ Celery 管线 | 未开始 | 10MB PDF 上传不阻塞 API，状态机进度可查 |
 | 4 | 失败重试（自动 2 + 手动 3）+ 错误回写 | 未开始 | 坏文件 failed 可重试，超限有提示 |
 | 5 | teach：FastAPI / SQLAlchemy / JWT-RBAC / Celery | 未开始 | 笔记入 `notes.md` |
 
-> 任务 1–5 的细化拆解见 `openspec/changes/add-doc-ingest-pipeline/tasks.md`（10 组 / 32 项），本表只保留周级视图。
+> 任务 1–5 的细化拆解见 `openspec/changes/add-doc-ingest-pipeline/tasks.md`（10 组 / 35 项），本表只保留周级视图。
 
 ## 阻塞项
 
-- **周计划待确认**（停机点 2）：`openspec/changes/add-doc-ingest-pipeline/tasks.md` 未确认前不动工
-- 环境准备（Docker Desktop / Python 3.12 / Node 20 + pnpm / `.env` 密钥 / 验收语料）由开发者本地完成
-- 仓库尚未 git init（在 change 任务 1.1 中处理）
+- **无阻塞**：周计划已于 2026-09-12 确认（停机点 2 通过），可连续实施到下一处停机点（新依赖 / 改 DDL / 改 collection schema）
+- 已解除：`.env` 缺 `DATABASE_URL` / `REDIS_URL` / `SECRET_KEY` → 按开发默认值补齐（原 7 个模型网关键未改动）
+- 已解除：宿主 8000 / 5432 / 6379 端口已被 OneHub 占用 → compose 用独立 project name + 错开端口（pg 5433 / redis 6380 / nginx 8080）
 
 ## 下一步
 
-1. 开发者确认周计划（可逐条改 tasks.md）
-2. 执行 `/opsx:apply`（或让我按 tasks.md 逐项实施）：先任务 1 起环境，再任务 2/3 落 DDL 与上传
-3. 每完成一组任务回写勾选与 `docs/progress.md`，完工后 `/opsx:archive`
+1. 完成 1.3 容器健康核验（api / worker / beat / pg / redis / nginx 全 healthy，Milvus 不启动）
+2. 进入第 2 组：SQLAlchemy 模型（5 张表）→ Alembic 迁移（ADR-0001 已批准，不另走停机点）
+3. 每完成一组回写 `docs/progress.md` 证据与 tasks.md 勾选；全部完成再 `/opsx:archive`
