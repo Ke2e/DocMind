@@ -1,0 +1,7 @@
+# 统一换行：工作区保留各平台习惯，入库统一按文本处理
+* text=auto
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary
+*.pdf binary
+*.docx binary

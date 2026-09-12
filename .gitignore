@@ -1,0 +1,33 @@
+# ---------------- 密钥与本地配置 ----------------
+.env
+.env.local
+*.pem
+
+# ---------------- Agent 工作目录 ----------------
+# 工具可重新生成（openspec update / specify init）；且可能存有会话数据，不入版本控制
+.codebuddy/
+.workbuddy/
+
+# ---------------- Python ----------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# ---------------- Node / 前端 ----------------
+node_modules/
+dist/
+.vite/
+
+# ---------------- 运行期数据与挂载卷 ----------------
+data/
+uploads/
+*.sqlite3
+
+# ---------------- 生成的验收语料（由 tools/gen_acceptance_corpus.py 重建）----------------
+# 含 10MB 级二进制文件，不入版本控制；脚本可确定性重建
+fixtures/acceptance/
