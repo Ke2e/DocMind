@@ -267,11 +267,9 @@ docs/新会话提示词.md                      开工提示词（主提示词 +
 ## 十、待办与风险
 
 1. **两项"规格未规定"已定案**（2026-09-12 开发者本人作答）：用户名**区分大小写**（`alice` ≠ `Alice`）；密码**上限 128 字符**（配置 `PASSWORD_MAX_LENGTH`）。规格已同步更新，**不要再改**。
-2. **审查记录的 3 项"规格未覆盖"待开发者定**（完整见 `docs/findings.md` D-032）——**未擅自改规格**，三条都还没定：
-   (a) 用户名"两端去空白归一化"与"长度上限 64 / 非空"规格里没写，是实现在输入层加的规范化；
-   (b) `GET /api/auth/me` 规格未显式要求，目前作为 3.3 的受保护接口样本存在；
-   (c) 3.3 真正的越权**写**操作要等 4.1 / 5.2 有接口后才能端到端验（tasks.md 已注明 defer）。
-   处置选项：回写规格 / 撤掉实现 / 保持现状 —— 等你一句话。
+2. **审查记录的 3 项"规格未覆盖"已收口**（2026-09-13，开发者授权"按推荐来"，见 `docs/findings.md` D-034）：
+   用户名"非空 / ≤64 / 忽略两端空白"与 `GET /api/auth/me` 两项**已回写进 `user-auth` 规格**（新增「当前账号自省」Requirement）；
+   3.3 越权**写**操作的 defer **保持现状**（4.1 / 5.2 的验收本身就含跨账号用例）。**不需要再动。**
 3. **`SECRET_KEY` 轮换 = 全体凭证立即失效**：本期单密钥、无 kid / 双密钥并存机制。属开发期可接受取舍，换密钥时要心里有数。
 4. **无 lockfile**：依赖解析不可重现（同一份 `pyproject.toml` 在不同时间装出的版本可能不同）。
    与 ADR-0002 同批发现，超出该 ADR 范围，**建议单独立项**。
@@ -293,9 +291,8 @@ docs/新会话提示词.md                      开工提示词（主提示词 +
     ```
 11. **未验证项**：`RERANK_BASE_URL` 的 `parameters.top_n` 语义已实测有效，但 `max_chunks_per_doc` 等参数未测，
     W7 做重排时先小样验证。
-12. **镜像构建缺缓存（`docs/findings.md` D-033）**：`backend/Dockerfile` 设了 `PIP_NO_CACHE_DIR=1` 且 `RUN pip install .`
-    没有 BuildKit 缓存挂载 → 只要改了 `app/` 或 `pyproject.toml`，构建层失效，**所有依赖重新下载一遍**；
-    本机网络实测一次重建 **41 分钟**（日志里单轮 wheel 下载慢到 14 kB/s）。
-    建议修法：`RUN --mount=type=cache,target=/root/.cache/pip python -m pip install --upgrade pip && python -m pip install .`，
-    并去掉 `PIP_NO_CACHE_DIR`（pip 的下载缓存在构建期，不进镜像层，去掉不会让镜像变大）。
-    **第 4 / 5 组会频繁重建，建议先修它。**
+12. **镜像构建已加缓存 —— 实测生效（2026-09-13）**：`backend/Dockerfile` 去掉 `PIP_NO_CACHE_DIR=1`，
+    并给 pip 的 `RUN` 加 `--mount=type=cache,target=/root/.cache/pip`（细节见 `docs/findings.md` D-033 / D-034）。
+    实测同一台机器：修复前改 `app/` 重建 **41 分 37 秒** → 修复后 **1 分 27 秒**
+    （判据是同一次构建日志里 `Downloading` 0 行 / `Using cached` 115 行，不是耗时——耗时会被网络带偏）。
+    **首次**构建（缓存为空）仍需全量下载。若某环境 compose 用旧 builder 不认 `--mount`，回退那一行即可。
