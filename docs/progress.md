@@ -651,7 +651,7 @@ grep -rn -i -E "multipart|UploadFile|form-?data" --include=*.md --include=*.py .
 
 ```bash
 # 1) 单测（ASGI 直连）
-cd backend && .venv/Scripts/python.exe -m pytest -q --basetemp="../../uploads/_bt_$(date +%s)"
+cd backend && .venv/Scripts/python.exe -m pytest -q --basetemp="../uploads/_bt_$(date +%s)"
 # → 136 passed in 52.55s
 #   基线 93 → 136（本组新增 43 个用例）；⚠️ 汇总行无 skipped 才是真的 0 skipped
 #   --basetemp 必须给：本机沙箱会接管 pytest 收尾时对 %TEMP% 垃圾目录的清理并直接

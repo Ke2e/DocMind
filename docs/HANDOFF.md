@@ -129,7 +129,7 @@ export PATH="/d/Docker/App/resources/bin:/c/Users/ASUS/.workbuddy/binaries/Porta
 - git 2.55.0，全局身份 `Asize <3238075590@qq.com>`
 - Docker Desktop（CLI 29.7.2 / daemon linux / compose v5.3.1）—— 已常驻 `docmind` 栈
 - Alembic 已接入：宿主用 `backend/.venv/Scripts/alembic.exe`，容器内用 `docker exec docmind-api alembic upgrade head`
-- **测试基线**：`cd backend && .venv/Scripts/python.exe -m pytest -q --basetemp="../../uploads/_bt_$(date +%s)"` → **136 passed, 0 skipped**
+- **测试基线**：`cd backend && .venv/Scripts/python.exe -m pytest -q --basetemp="../uploads/_bt_$(date +%s)"` → **136 passed, 0 skipped**
   （`--basetemp` 不能省，理由见上表"pytest 汇总行会被沙箱掐掉"）
 - **端到端基线**：`cd backend && .venv/Scripts/python.exe ../tools/verify_auth_e2e.py` → **11/11 PASS**（经 nginx）
 - **端到端基线（4.x）**：`cd backend && .venv/Scripts/python.exe ../tools/verify_knowledge_base_e2e.py` → **26/26 PASS**
