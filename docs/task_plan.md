@@ -9,8 +9,9 @@
 - **规格基线**：`specs/001-doc-ingest-pipeline/spec.md`（2026-09-12 澄清完成，质量清单 16/16）
 - **在办提案**：`openspec/changes/add-doc-ingest-pipeline`（proposal + specs×3 + design + tasks，`validate --strict` 通过，**35 个任务**）
 - **阶段状态**：任务 0、周计划（停机点 2）、ADR-0001 与 ADR-0002（停机点 3）**均已通过**；
-  **第 1 组（运行环境 1.1–1.6）、第 2 组（数据模型与迁移 2.1–2.2）、第 3 组（账号体系 3.1–3.3）已完成**；
-  `openspec list` → **11/35 tasks**，`openspec validate --strict` → valid；下一项第 4 组（知识库 4.1–4.2）
+  **第 1 组（运行环境 1.1–1.6）、第 2 组（数据模型与迁移 2.1–2.2）、第 3 组（账号体系 3.1–3.3）、
+  第 4 组（知识库 4.1–4.2）已完成**；
+  `openspec list` → **13/35 tasks**，`openspec validate --strict` → valid；下一项第 5 组（文档上传与受理 5.1–5.5）
 
 ## 已冻结的规格要点（Q1–Q5）
 
@@ -32,10 +33,11 @@
 | 0d | ADR-0001（knowledge_bases DDL） | ✅ 已批准 | 2026-09-12 批准，随 W5 落地 |
 | 1 | 运行环境（分层骨架 + compose + 配置系统 + 测试脚手架 + 错误契约） | ✅ 完成 | 6 容器全 healthy + 经 nginx 真请求 200；配置三档校验（缺必需项即失败）；错误契约 `{code,message,detail?}`；pytest 21 passed |
 | 2 | 数据模型与迁移（ADR-0001：5 张表 + Alembic 0001） | ✅ 完成 | 干净库 upgrade→downgrade→upgrade 全通过；`alembic check` 无差异；容器内迁移亦成功 |
-| 3 | JWT + 用户体系（账号体系） | ✅ 完成 | 注册 / 登录 / 鉴权依赖就绪；经 nginx 真请求 **11/11 PASS**；pytest **54 passed, 0 skipped** |
-| 3 | 文档上传（含知识库归属）→ Celery 管线 | 未开始 | 10MB PDF 上传不阻塞 API，状态机进度可查 |
-| 4 | 失败重试（自动 2 + 手动 3）+ 错误回写 | 未开始 | 坏文件 failed 可重试，超限有提示 |
-| 5 | teach：FastAPI / SQLAlchemy / JWT-RBAC / Celery | 未开始 | 笔记入 `notes.md` |
+| 3 | JWT + 用户体系（账号体系） | ✅ 完成 | 注册 / 登录 / 鉴权依赖就绪；经 nginx 真请求 **11/11 PASS**；pytest **58 passed, 0 skipped** |
+| 4 | 知识库（4.1 创建/列表/重命名、4.2 非空拒删） | ✅ 完成 | 4 个接口就绪（`/api/knowledge-bases`）；经 nginx 真请求 **26/26 PASS**（含查库核实）；pytest **92 passed, 0 skipped** |
+| 5 | 文档上传（含知识库归属）→ Celery 管线 | 未开始 | 10MB PDF 上传不阻塞 API，状态机进度可查 |
+| 6 | 失败重试（自动 2 + 手动 3）+ 错误回写 | 未开始 | 坏文件 failed 可重试，超限有提示 |
+| 7 | teach：FastAPI / SQLAlchemy / JWT-RBAC / Celery | 未开始 | 笔记入 `notes.md` |
 
 > 任务 1–5 的细化拆解见 `openspec/changes/add-doc-ingest-pipeline/tasks.md`（10 组 / 35 项），本表只保留周级视图。
 
@@ -48,8 +50,9 @@
 
 ## 下一步
 
-1. **第 4 组：知识库**（4.1 创建 / 列表 / 重命名，4.2 非空拒删）—— 无需新依赖，可直接实施
-   - 备注：开发者已点头允许提前做 `6.1 分块算法测试`（零新依赖），但它按 tasks.md 属第 6 组，**暂不跳步**，等第 6 组一并做
-2. 之后按 tasks.md 顺序：5.x 上传受理 → 6.x 后台管线 → 7.x 状态与进度 → 8.x 失败重试与中断补偿 → 9.x 删除清理 → 10.x 验收留档
+1. **第 5 组：文档上传与受理**（5.1 上传接口 / 5.2 归属约束 / 5.3 任务投递与并发保护 / 5.4 片段反查 / 5.5 列表与详情）
+   —— 零新依赖预期，可直接实施；**但 5.3 的分布式锁若要用新库即触发停机点**（先写 ADR 等批）
+   - 备注：开发者已点头允许提前做 `6.1 分块算法测试`（零新依赖），但它按 tasks.md 属第 6 组，**暂不跳步**
+2. 之后按 tasks.md 顺序：6.x 后台管线 → 7.x 状态与进度 → 8.x 失败重试与中断补偿 → 9.x 删除清理 → 10.x 验收留档
 3. 每完成一组回写 `docs/progress.md` 证据与 tasks.md 勾选；全部完成再 `/opsx:archive`
-4. **待办**：`docs/HANDOFF.md` 目前仍停留在"第 3 组卡在停机点"的状态，交班前需刷新
+4. **待办**：`docs/HANDOFF.md` 已刷新到第 4 组完工状态（第 5 次交接）

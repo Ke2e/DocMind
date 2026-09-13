@@ -323,3 +323,107 @@ cd backend && .venv/Scripts/python.exe -m pip install -e ".[dev]"
   中间那次 9 分 16 秒就是差点被我误记成"缓存生效"的例子。
 - 注意：`--mount=type=cache` 需要 BuildKit（Docker Desktop 默认启用；本机 Docker 29.7.2 实测接受该语法）；
   若某环境的 compose 用旧 builder 会直接报语法错，届时回退这一行即可
+
+### D-035 知识库接口（4.1 / 4.2）的三个判断题
+
+规格把"要什么"写清楚了，但有三处"怎么做"由实现定，记录在此以免下一个人重新纠结：
+
+| 判断 | 结论 | 理由 |
+| --- | --- | --- |
+| 越权访问他人知识库回什么状态码 | **404**（不用 403） | 403 等于确认"这个 id 真实存在，只是不属于你"，把他人资源的存在性变成了可探测信息。规格只要求"拒绝且不修改数据"，404 满足；与 3.2「登录失败不区分两种原因」是同一思路。落地方式是把 `id` 与 `user_id` 放进**同一条 WHERE**（`services/knowledge_base.py::get_owned_knowledge_base`），而不是"取出来再比对"——后者只要有人漏写那一步就越权 |
+| 重命名时没带 `description` 怎么办 | **保留原值**（PATCH 语义） | 缺省值若写 `None`，"没传"与"显式传 null"就再也分不开，结果是**改个名字顺手清空简介**（一条静默数据丢失）。故 service 层用 `UNSET` 哨兵，路由层用 `model_fields_set` 判断该字段是否真的出现过 |
+| 名称是否大小写归一 / 上限从哪来 | **不归一小写**；上限取模型常量 `KB_NAME_MAX_LENGTH`（= DDL 的 `VARCHAR(128)`） | 大小写沿用已定案的同类规则（用户名区分大小写），不另创一套。上限不另设配置项：它是 **DDL 的形状**而不是可调业务参数，抄成字面量迟早与数据库脱节（届时表现为"接口放过、DB 报 `StringDataRightTruncation`"，正是 1.6 要挡的内部细节外泄）。同第 3 组把 `users.username` 的 64 对齐 DDL 的处理 |
+
+另两处实现细节，写下来供后续组参考：
+
+- **名称校验必须"先 strip 再判长"**（`field_validator(mode="before")`）。写成 `Field(max_length=128)` 会先按原始串判长，
+  把 `"  " + 128 字` 这种"归一化后恰好合法"的名称误杀。测试 `test_create_accepts_padded_name_that_fits_after_trimming` 锁住这个顺序。
+- **列表的文档数量用 `LEFT OUTER JOIN ... ON`，过滤条件写在 ON 里**（code 里是 `and_(Document.kb_id == ..., Document.deleted_at.is_(None))`）。
+  写进 `WHERE` 会让 `LEFT JOIN` 退化成 `INNER JOIN`，把"零文档的库"整行滤掉——表现为用户刚建完库却看不到自己的空库。
+
+### D-036 两个被实测证伪/证实的细节（第 4 组）
+
+**1. `session.refresh()` 在建库后不是必需的（已被实测证伪"必需"）**
+
+初稿在 `create_knowledge_base` 路由里加了 `await session.refresh(kb)`，注释写着"不 refresh 会抛 MissingGreenlet"。
+**这是想当然，不是事实**：SQLAlchemy 2.0 在支持 `RETURNING` 的后端（asyncpg 就是）上，会把 `server_default`
+生成的 `id` / `created_at` 随 `INSERT ... RETURNING` 一起带回来，`flush()` 之后属性就是加载好的。
+实测方式：把那行注释掉 → `pytest tests/test_knowledge_base_api.py -k "create or list_includes"` → **16 passed**。
+故删掉该行，并把注释改成实测结论。**教训：注释里的因果也要有证据，否则下一个读代码的人会把它当事实继承下去。**
+
+**2. 宿主侧读容器 psql 输出必须显式 `encoding="utf-8"`**
+
+本机 locale 是 GBK，而容器里的 psql 吐的是 UTF-8。`subprocess.run(..., text=True)` 会用 locale 编码解码，
+把知识库名读成乱码 —— 而 `tools/verify_knowledge_base_e2e.py` 的"查库核对"正是**拿读回来的字符串与期望值比较**，
+乱码会让核对变成假失败（且看起来像"数据没落库"，很容易把人带向错误的方向）。
+修法：`subprocess.run(..., capture_output=True, encoding="utf-8", errors="replace")`。
+
+### D-037 4.2 的删除为什么要"先清墓碑再删库"
+
+`documents.kb_id → knowledge_bases.id` 刻意保持 **RESTRICT**（ADR-0001），它是"非空拒删"的第二道闸门。
+但墓碑行（`deleted_at` 非空）**仍然持有 `kb_id`**，所以"库里已经没有任何未删除的文档"≠"可以直接删库"——
+直接 `DELETE FROM knowledge_bases` 会被外键拦住（500），这正是 D-024 交给第 4 组的衔接点。
+
+`delete_knowledge_base` 的顺序因此是：
+
+1. `count_live_documents`（只算 `deleted_at IS NULL`）→ 非 0 就 409 并回数量；
+2. 为 0 时先 `DELETE FROM documents WHERE kb_id = ... AND deleted_at IS NOT NULL`
+   物理清掉墓碑（`chunks` / `processing_tasks` 由它们对 `documents` 的 `ON DELETE CASCADE` 一并带走，不必手工删）；
+3. 再删知识库行。
+
+两条约束分工要记住：**应用层的计数是"给人看的提示"，RESTRICT 外键才是"任何漏写检查的代码路径也删不掉非空库"的兜底。**
+测试 `test_live_documents_block_deletion_at_the_database_level_too` 绕过接口直接删库行，专门断言这个兜底真的在。
+
+> 第 2 步的 `AND deleted_at IS NOT NULL` 是提交前审查才补上的，理由见 D-038 —— 少了它会有静默数据丢失。
+
+### D-038 第 4 组提交前的两轴审查：1 条硬违规 + 1 条由审查引出的实现缺陷
+
+审查方式与第 3 组一致：**两个只读子代理并行**，一个对"规"（AGENTS.md / constitution / 两个 ADR / findings），
+一个对"标准"（`knowledge-base` 规格 + tasks 4.x）。基线 `b464f22` → 未提交工作区。
+
+**硬违规（1 条，已修）**
+
+| 问题 | 处置 |
+| --- | --- |
+| `services/knowledge_base.py` 模块 docstring 断言"**一切**查询都带 `user_id`"，但 `count_live_documents` 与删库时的墓碑清除两条**文档域**语句只带了 `kb_id`；同时把红线出处写成了 `AGENTS.md §6`（§6 是停机点，该红线条目在 **§5 禁改清单**） | 两条语句补上 `user_id`；docstring 改成"每条查询都带用户维度过滤（§5）"，并写清分两层做法：知识库域走 `get_owned_knowledge_base`（id 与 user_id 同一条 WHERE），文档域在语句里显式带 `user_id`（纵深防御 —— 计数与删除是两个语句，归属前提不该靠"读代码的人记得上面查过"） |
+
+**审查引出的实现缺陷（比原报告的问题更严重，已修）**
+
+原报告只把"计数与删除之间的并发窗口"列为判断题，担心会抛 500。顺着这条追下去发现更糟：
+当时的墓碑清除写的是**"删除该库全部文档"**（`deleted_at` 不带条件），把正确性押在"计数之后没有新文档落进来"这个假设上。
+一旦窗口内真有一份**在册**文档落进来（例如用户刚上传完就删库），这句会**连那份刚上传的文档一起物理删掉**，
+再删库成功 → 接口回 **204 成功**，用户以为只删了一个空库。**静默的数据丢失，比报错严重得多。**
+
+修法：
+
+- 墓碑清除加 `deleted_at IS NOT NULL`，只删墓碑行；
+- 并发落进来的在册文档因此会留下来，被 `fk_documents_kb_id_knowledge_bases`（RESTRICT）拦下，
+  再被 `except IntegrityError → ConflictError` 翻译成 **409**（原来会冒 500）；
+- 新增 `test_delete_race_with_a_concurrent_insert_is_refused`：monkeypatch 把 `count_live_documents`
+  钉成 0 来**稳定复现**这个窗口，断言"409 + 库与那份文档都还在"。真并发没法稳定复现，故用钉住计数代替。
+
+**判断题处置**
+
+| 编号 | 判断 | 处置 |
+| --- | --- | --- |
+| J1 | `normalize_kb_name` 里的 `isinstance` 守卫是死代码（两个调用点都已先判类型），还被 `# pragma: no cover` 掩盖 | **已删**（不留投机性防御） |
+| J2 | `KnowledgeBasePublic` 挂着 `from_attributes=True`，与自身 docstring"不从 ORM 直接转换"自相矛盾 | **已删 config**，并把 docstring 改成解释"为什么刻意不带它" |
+| J3 / J4（Spec 轴） | e2e 脚本硬编码 `129` 与"长度不超过 128"，与"上限只从 `KB_NAME_MAX_LENGTH` 取"的原则不一致 | **已改**：脚本 `sys.path` 加 `backend/` 后 `import KB_NAME_MAX_LENGTH`；顺手把脚本改成不打印 128 字面量 |
+| J6 | `stub_document` 用 f-string 拼 SQL（当前都是脚本内字面量，非漏洞，但后来人可能塞字符串进来） | **已改**：函数改为只接受整数 `index`、文件名在脚本内部拼出 → 所有插入值都是 int/bool，**字符串根本不进 SQL**。（试过 psql 的 `-v` 变量，但 `docker exec` 会把它吞掉、变量不被替换，见下） |
+| J5 | 重命名侧"点名名称限制"未验；`test_create_rejects_missing_name` 只断言 422 | **已改**：rename 用例改为参数化并断言提示串；create 的缺字段用例改为断言 detail 里出现 `name` |
+| Spec 轴 · 断言强度 | 4 个 PATCH 写用例只看响应体，没查库（含"不传 description 应保留原值"这条高危路径） | **已改**：全部补 `SELECT` 核对。**写操作以查库为准**是本项目硬规矩，光看响应体连"响应带原简介、库里已清空"都能骗过 |
+
+**环境事实（新增）**：`docker exec <container> psql ... -v name=value -c "SELECT :'name'"` 里的 `-v`
+会被 `docker exec` 吞掉（psql 收到的 SQL 里 `:'name'` 原样未替换）。另外 `psql -tAc -v ...` 里 `-tAc`
+是组合短选项，紧跟其后的参数会被当成 `-c` 的值——要传 `-v` 必须写成 `-tA -v ... -c ...`。
+结论：宿主侧想给容器内 psql 传变量，别走 `-v`；要么全用整数拼（可控），要么改用 `docker exec -i psql < file`。
+
+**规格未覆盖项（Spec 轴列出，本组未擅自改规格，等开发者定）**
+
+| 项 | 建议 |
+| --- | --- |
+| `description` 请求 / 响应字段 + PATCH 局部更新语义 | **建议回写规格**（字段是 ADR-0001 已批准的 DDL，且已是 4.1 的交付面） |
+| 列表 `document_count` 的口径 = `deleted_at IS NULL` | **建议回写规格**（规格只说"当前文档数量"，该口径来自 D-024；不写进规格，下一个人会实现成物理行数） |
+| 列表排序 `created_at asc, id asc`、重命名幂等、名称 strip 且大小写不归一、响应带 `id/created_at/document_count` | **可保留但需记录**（规格未定，实现自选） |
+| 重命名他人库返回 404 而非 403 | 规格未规定状态码，属实现裁量；理由见 D-035 |
+

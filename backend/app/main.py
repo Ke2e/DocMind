@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.deps import get_settings
-from app.api.routes import auth, health
+from app.api.routes import auth, health, knowledge_bases
 from app.core.db import dispose_engine
 from app.core.errors import register_exception_handlers
 
@@ -50,6 +50,7 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(auth.router)
+    app.include_router(knowledge_bases.router)
     return app
 
 

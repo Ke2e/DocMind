@@ -60,8 +60,18 @@
 
 ## 4. 知识库
 
-- [ ] 4.1 创建 / 列表 / 重命名接口，验证：重名、空名、超长名被拒；**列表条目包含该知识库当前文档数量**（knowledge-base spec「列表包含文档数量」场景）；双账号交叉测试下列表只含自己的知识库；**重命名他人知识库被拒且数据不变**
-- [ ] 4.2 删除知识库（非空拒删并返回未清空数量），验证：空库删除成功且从列表消失；非空库返回拒绝并给出文档数量
+- [x] 4.1 创建 / 列表 / 重命名接口，验证：重名、空名、超长名被拒；**列表条目包含该知识库当前文档数量**（knowledge-base spec「列表包含文档数量」场景）；双账号交叉测试下列表只含自己的知识库；**重命名他人知识库被拒且数据不变**
+  - 完成证据（2026-09-13）：新增 `app/schemas/knowledge_base.py`（`mode="before"` 先 strip 再判长）、`app/services/knowledge_base.py`、`app/api/routes/knowledge_bases.py`（`GET/POST /api/knowledge-bases`、`PATCH/DELETE /api/knowledge-bases/{kb_id}`），`app/main.py` 挂载
+  - 拒绝路径：同账号重名 → 409 `conflict`；空名 / 超长（129 字符）→ 422 且 `detail` 点名"不能为空"/"长度不超过 128 个字符"；恰好 128 字符必须通过（边界用例）；`"  " + 128 字` 也必须通过（锁住"先 strip 再判长"的顺序，换成 `Field(max_length=128)` 会变红）
+  - 列表：`LEFT OUTER JOIN ... ON`（条件写在 ON 里，写进 WHERE 会把零文档的库整行滤掉）；`document_count` **只算 `deleted_at IS NULL`** —— 造 2 条在册 + 1 条墓碑，列表回 **2**（`test_list_includes_document_count_excluding_tombstones`）
+  - 越权：双账号交叉验「列表只含自己的库」；`PATCH` 他人库 → **404 且查库名字未变**；**3.3 的越权写 defer 在此收口** —— 请求体塞 `user_id = bob.id` 建库，查库确认归属仍是 alice（`test_create_ignores_user_id_in_the_request_body`）
+  - 附带：重命名为自己当前名称幂等（不报 409）；只改名不传 `description` 时保留原简介、显式传 `null` 才清空（PATCH 语义）
+- [x] 4.2 删除知识库（非空拒删并返回未清空数量），验证：空库删除成功且从列表消失；非空库返回拒绝并给出文档数量
+  - 完成证据（2026-09-13）：`DELETE /api/knowledge-bases/{kb_id}` → 空库 **204** 且从列表与库中消失（查库）；非空库 **409** `conflict`，`message` 与 `detail.document_count` 均给出未清空数量（实测 2），且库与文档都完好（查库复核）
+  - **D-024 衔接点已落地**：计数只算非墓碑行，但墓碑行仍持有 `kb_id`，直接删库会被 `fk_documents_kb_id_knowledge_bases`（RESTRICT）拦住 → service 在计数为 0 时**先物理清除墓碑文档**（`chunks` / `processing_tasks` 由 `ON DELETE CASCADE` 一并带走）再删库；用例 `test_tombstoned_documents_do_not_block_deletion` 专门验这条
+  - **墓碑清除只删墓碑行**（`deleted_at IS NOT NULL`，不带"删该库全部文档"）：后者会在并发窗口内把一份刚上传的在册文档**静默删掉**（接口还回 204）。只删墓碑行则并发落进来的文档会被 RESTRICT 拦下，经 `except IntegrityError` 翻译成 409；`test_delete_race_with_a_concurrent_insert_is_refused` 用 monkeypatch 把计数钉成 0 稳定复现该窗口
+  - 兜底断言：`test_live_documents_block_deletion_at_the_database_level_too` 绕过接口直接 `DELETE FROM knowledge_bases`，断言**被外键拦下**（`IntegrityError`）—— 证明"非空拒删"不只靠应用层那次计数
+  - 越权：他人库 `DELETE` → 404 且查库仍在（数据不变）
 
 ## 5. 文档上传与受理
 

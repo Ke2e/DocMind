@@ -431,3 +431,154 @@ e2e 关键响应原文：
 - 核验方式：对两份文件 grep 过期残留词（`第 3 次交接` / `8/35` / `21 passed, 0 skipped` / `卡在停机点上` /
   `先出 ADR-0002` / `1.3 容器健康核验中`）→ 均为 0 命中（HANDOFF 里 1 处"第 3 次交接"是提交信息的历史引用）；
   再 grep 新事实锚点（`11/35` / `54 passed` / `11/11 PASS` / `未提交` / `ADR-0002` / `D-031`）→ 全部命中
+
+---
+
+## 2026-09-13（第 4 组：知识库）
+
+### 开工前基线复核（真实命令，非印象）
+
+```bash
+docker compose ps --format 'table {{.Name}}\t{{.State}}\t{{.Health}}'
+# → api / beat / nginx / pg / redis / worker 6/6 running healthy
+
+cd backend && .venv/Scripts/python.exe -m pytest -q
+# → 58 passed in 12.09s（汇总行无 skipped）
+
+git log --oneline -1 && git status --short
+# → b464f22；工作区干净
+```
+
+### 交付物
+
+| 类别 | 文件 |
+|---|---|
+| 新增（4） | `backend/app/schemas/knowledge_base.py`、`app/services/knowledge_base.py`、`app/api/routes/knowledge_bases.py`、`backend/tests/test_knowledge_base_api.py` |
+| 新增（验收） | `tools/verify_knowledge_base_e2e.py` —— 经 nginx 真请求 + **查库核实**（10.1 会并入统一入口） |
+| 修改（1） | `backend/app/main.py`（挂载 knowledge_bases 路由） |
+
+**无新增依赖、无 DDL 变更、无 collection 变更** → 未触及停机点（本组开工前开发者已确认「不需要新依赖，不涉及停机点」）。
+
+### 接口清单
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/knowledge-bases` | 列出自己的库，每条带 `document_count`（只算非墓碑文档） |
+| `POST` | `/api/knowledge-bases` | 创建；名称同账号内唯一，201 |
+| `PATCH` | `/api/knowledge-bases/{kb_id}` | 重命名（可一并改简介） |
+| `DELETE` | `/api/knowledge-bases/{kb_id}` | 非空拒删，204 / 409 |
+
+### 第 4 组任务状态
+
+| 任务 | 状态 | 验证证据 |
+|---|---|---|
+| 4.1 创建 / 列表 / 重命名 | 完成 | 重名 409、空名与超长（129 字）422 且点名原因、**恰好 128 字通过**、`"  "+128 字` 通过（锁「先 strip 再判长」的顺序）；列表 `document_count` **只算 `deleted_at IS NULL`**（2 在册 + 1 墓碑 → 回 2）；双账号交叉列表互不可见；**重命名他人库 404 且查库名字未变**；请求体塞 `user_id` 建库 → 查库确认归属仍是自己（3.3 越权写 defer 收口） |
+| 4.2 删除（非空拒删） | 完成 | 空库 204 且从列表与库中消失（查库）；非空库 409 且 `message` + `detail.document_count` 给出未清空数量，库与文档都完好（查库复核）；**只剩墓碑行的库可删**（D-024 衔接点）；绕过接口直接删库行被 RESTRICT 外键拦下（`IntegrityError`） |
+
+### 证据（可复现命令与输出）
+
+```bash
+# 1) 单测（ASGI 直连）
+cd backend && .venv/Scripts/python.exe -m pytest -q
+# → 93 passed in 28.98s
+#   基线 58 → 93（本组新增 35 个用例）；⚠️ 汇总行无 skipped，才是真的 0 skipped
+
+# 2) 端到端（经 nginx 打真实 HTTP；本机无 curl）
+cd backend && .venv/Scripts/python.exe ../tools/verify_knowledge_base_e2e.py
+# → 合计 26 项，FAIL 0 项，EXIT=0
+#   跑了**两轮**：审查前代码 26/26，审查修正后重建镜像再跑仍是 26/26（第二轮输出见下）
+
+# 3) 镜像重建（findings D-034 的缓存修复，本轮两次实测）
+docker compose up -d --build
+# → 1 分 26 秒 ×2（改 app/ 后重建；判据见 D-034 —— 缓存命中的话日志里 Downloading 为 0 行）
+docker exec docmind-api python -c "import app.main as m; print(len(m.app.routes))"
+# → 7（4 条 Framework 默认 + 3 个 _IncludedRouter，即 health / auth / knowledge_bases 三个路由器）
+
+# 4) 开发库状态（写操作以查库为准）
+docker exec docmind-pg psql -U docmind -d docmind -tAc \
+  "SELECT 'users='||count(*) FROM users UNION ALL SELECT 'kbs='||count(*) FROM knowledge_bases UNION ALL SELECT 'docs='||count(*) FROM documents;"
+# → users=0 / kbs=0 / docs=0（e2e 脚本自清，且已由脚本内「收尾：本轮测试数据已清空（查库）」断言）
+
+# 5) 迁移状态（本组无 DDL 变更，确认无漂移）
+docker exec docmind-api alembic current   # → 0001 (head)
+docker exec docmind-api alembic check     # → No new upgrade operations detected.
+```
+
+第二轮 e2e 的输出（修正后、重建镜像后复跑，节选）：
+
+```
+PASS  准备：双账号注册并登录   [a.id=9 b.id=10]
+PASS  4.1 请求体里的 user_id 被忽略（查库归属）   [201 owner=9（写在 body 里的是 bob=10）]
+PASS  4.1 列表文档数量=2（墓碑行不计入）   [document_count=2，库里实际 3 行]
+PASS  4.2 非空拒删 409 且给出未清空数量   [409 {"code":"conflict","message":"该知识库下还有 2 份文档，请先清空后再删除","detail":{"document_count":2}}]
+PASS  4.2 只剩墓碑行的库可删 204（D-024 衔接点）
+PASS  收尾：本轮测试数据已清空（查库）   [0 / 0]
+合计 26 项，FAIL 0 项
+```
+
+e2e 关键响应原文（节选，全部 26 项见脚本输出）：
+
+| 检查 | 实测响应 |
+|---|---|
+| 创建成功 | `201 {"id":1,"name":"e2e 库 1789293206","document_count":0,…}` |
+| 同账号重名 | `409 {"code":"conflict","message":"该名称的知识库已存在，请换一个"}` |
+| 空名 | `422 {"code":"validation_error",…,"reason":"Value error, 知识库名称不能为空"}` |
+| 超长名（129 字） | `422 … "reason":"Value error, 知识库名称长度不超过 128 个字符"` |
+| 重命名他人库 | `404`（查库仍是原名字） |
+| 非空拒删 | `409 {"code":"conflict","message":"该知识库下还有 2 份文档，请先清空后再删除","detail":{"document_count":2}}` |
+| 空库删除 | `204`（无响应体） |
+
+### 本轮的两处实测（一条证伪、一条证实，详见 findings D-036）
+
+- **证伪**：初稿在 `create_knowledge_base` 路由里写了 `await session.refresh(kb)`，注释断言"不 refresh 会抛 MissingGreenlet"。
+  把那行注释掉跑 `-k "create or list_includes"` → **16 passed** —— SQLAlchemy 2.0 在 asyncpg 上会用
+  `INSERT ... RETURNING` 带回 `server_default` 生成的 `id` / `created_at`，refresh 纯属多余。已删该行并把注释改成实测结论。
+  （教训：注释里的因果也要有证据，否则会被下一个人当事实继承。）
+- **证实**：`tools/verify_knowledge_base_e2e.py` 里读容器 psql 输出必须显式 `encoding="utf-8"`——
+  本机 locale 是 GBK，而容器 psql 吐 UTF-8，默认编码解码会把库名读成乱码，而该脚本的"查库核对"正是拿读回的字符串比对，
+  乱码会让核对变成**假失败**（且看起来像"数据没落库"，极易把人带偏）。
+
+### 本组三个判断题（记入 findings D-035，均已定，勿再反复）
+
+| 判断 | 结论 |
+|---|---|
+| 越权访问他人知识库的状态码 | **404**（403 会把"他人资源是否存在"变成可探测信息）；落地方式是把 `id` 与 `user_id` 放同一条 WHERE |
+| 重命名未带 `description` | **保留原值**（PATCH 语义）；service 用 `UNSET` 哨兵 + 路由用 `model_fields_set` 区分"没传"与"传 null" |
+| 名称大小写 / 长度上限来源 | 不归一小写（沿用户名口径）；上限取模型常量 `KB_NAME_MAX_LENGTH`（= DDL），不另设配置项 |
+
+### 提交前的两轴审查（走 AGENTS.md §4 门禁，详见 findings D-038）
+
+两轴只读子代理并行（基线 `b464f22` → 工作区）：Standards 轴对 `AGENTS.md` / constitution / 两个 ADR / findings；
+Spec 轴对 `knowledge-base` 规格 + tasks 4.x。
+
+| 轴 | 结论 | 处置 |
+|---|---|---|
+| Standards | **1 条硬违规** + 6 条判断题 | 硬违规已修：`count_live_documents` 与墓碑清除两条**文档域**语句漏了 `user_id`，同时注释把红线出处写成 §6（实为 **§5 禁改清单**）；已补过滤 + 改正出处 |
+| Spec | 规格 7 个 Scenario **全部"实现 + 测试"双覆盖**；发现 4 个 PATCH 写用例**只看响应体没查库** | 已补查库断言（含"不传 description 应保留原值"这条高危路径）；另有 2 项建议回写规格、4 项建议记录在案 —— **未擅自改规格**，列入待开发者表态 |
+
+**审查引出的实现缺陷（比原报告的问题更严重，已修）**：
+
+原报告只把"计数与删除之间的并发窗口"列为判断题，担心抛 500。顺着追下去发现当时的墓碑清除写的是
+**"删除该库全部文档"**（`deleted_at` 不带条件）—— 它把正确性押在"计数之后没有新文档落进来"这个假设上。
+一旦窗口内真有一份**在册**文档落进来（例如用户刚上传完就删库），这句会**连那份刚上传的文档一起物理删掉**、
+再删库成功，接口回 **204 成功** —— 静默的数据丢失，比报错严重得多。
+
+修法三步：墓碑清除加 `deleted_at IS NOT NULL`（只删墓碑行）→ 并发落进来的在册文档被 RESTRICT 外键拦下 →
+`except IntegrityError → ConflictError` 翻译成 **409**（原来会冒 500）。新增
+`test_delete_race_with_a_concurrent_insert_is_refused`：monkeypatch 把 `count_live_documents` 钉成 0
+以**稳定复现**该窗口，断言"409 + 库与那份文档都还在"。
+
+**其余判断题处置**：删掉 `normalize_kb_name` 里的死代码守卫（J1）、删掉 `KnowledgeBasePublic` 上自相矛盾的
+`from_attributes`（J2）、e2e 脚本改为 `import KB_NAME_MAX_LENGTH` 不再抄 128/129（J3）、
+`stub_document` 改为只接受整数索引使字符串不进 SQL（J6）、rename 侧补"点名名称限制"断言（J5）。
+
+**规格未覆盖项（等开发者定，未改规格）**：`description` 字段与 PATCH 语义、列表 `document_count` 的口径
+（= `deleted_at IS NULL`，来自 D-024）**建议回写规格**；列表排序、重命名幂等、名称 strip 与大小写、
+响应额外字段**建议记录在案**。
+
+### 数据与环境收尾（已复核）
+
+- 开发库 `docmind`：`users=0` / `knowledge_bases=0` / `documents=0` / `chunks=0` / `processing_tasks=0`
+- 测试库 `docmind_test`：public schema 仅剩 `alembic_version`（pytest 的 `db_schema` fixture 约定，非残留）
+- `openspec list` → **13/35 tasks**
+- 容器 6/6 healthy；本轮改动**已提交**（提交号见交接文档）

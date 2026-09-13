@@ -1,28 +1,29 @@
 # DocMind 开发交接文档
 
-**交接时间**：2026-09-12（第 4 次交接）
-**交接范围**：W5 第 3 组账号体系（3.1–3.3）+ ADR-0002 落地已完成；**下一站是第 4 组知识库，无停机点阻塞**
+**交接时间**：2026-09-13（第 5 次交接）
+**交接范围**：W5 第 4 组知识库（4.1–4.2）已完成；**下一站是第 5 组文档上传与受理，无停机点阻塞**
 **给下一个会话**：读完本文 + `AGENTS.md` 即可接手，不需要回溯聊天记录
 
 ---
 
 ## 一、当前状态（一句话）
 
-第 3 组已完成并提交 —— 共 3 个提交：交付 `bb95bef`（21 文件，+1532/−18）、交接材料 `7a7e648`、
-规格回写与构建缓存修复 `fc4623a`（工作区干净，截至本文这次提交）；
-`openspec list` → **11/35 tasks**、`validate --strict` 通过；
-开发库 `docmind` 与测试库 `docmind_test` 均在 Alembic **`0001`**（本组无 DDL 变更）；
-6/6 容器 healthy（pg 5433 / redis 6380 / nginx 8080），容器内已确认新代码生效（`PASSWORD_MAX_LENGTH=128`）；
-`pytest -q` → **58 passed, 0 skipped**（第 3 组开工前为 21）；
-经 nginx 打真实请求跑 `tools/verify_auth_e2e.py` → **11/11 PASS**（镜像重建后又复跑一次，同样 11/11）。
-**下一项第 4 组（知识库 4.1 / 4.2）不需要新依赖，可直接实施。**
+第 4 组已完成并提交 —— 交付 4 个知识库接口（`GET/POST /api/knowledge-bases`、`PATCH/DELETE /api/knowledge-bases/{kb_id}`）；
+`openspec list` → **13/35 tasks**、`validate --strict` 通过；
+开发库 `docmind` 与测试库 `docmind_test` 仍在 Alembic **`0001`**（本组无 DDL 变更，`alembic check` → `No new upgrade operations detected.`）；
+6/6 容器 healthy（pg 5433 / redis 6380 / nginx 8080），镜像重建实测 **1 分 26 秒**（D-034 的缓存修复持续生效）；
+`pytest -q` → **92 passed, 0 skipped**（第 4 组开工前为 58）；
+经 nginx 打真实请求跑 `tools/verify_knowledge_base_e2e.py` → **26/26 PASS**（含"查库核对"，不是只看接口状态码）。
+**下一项第 5 组（上传与受理 5.1–5.5）预期零新依赖，可直接实施；只有 5.3 的分布式锁若引入新库才触发停机点。**
 
-**本组交付清单（已随 `bb95bef` 提交）**
+**本组交付清单**
 
 | 类别 | 文件 |
 | --- | --- |
-| 新增（8） | `backend/app/core/security.py`、`app/schemas/auth.py`、`app/services/auth.py`、`app/api/routes/auth.py`、`backend/tests/test_security.py`、`backend/tests/test_auth_api.py`、`tools/verify_auth_e2e.py`、`docs/adr/0002-auth-libraries.md` |
-| 修改（13） | `backend/pyproject.toml`、`app/core/config.py`（加 `PASSWORD_MAX_LENGTH`）、`app/core/errors.py`、`app/main.py`、`app/api/deps.py`、`tests/conftest.py`、`tests/test_config.py`、`.env.example`、`docs/findings.md`、`docs/progress.md`、`docs/task_plan.md`、`openspec/.../specs/user-auth/spec.md`、`openspec/.../tasks.md` |
+| 新增（4） | `backend/app/schemas/knowledge_base.py`、`app/services/knowledge_base.py`、`app/api/routes/knowledge_bases.py`、`backend/tests/test_knowledge_base_api.py` |
+| 新增（验收） | `tools/verify_knowledge_base_e2e.py` —— 经 nginx 真请求 + `docker exec docmind-pg psql` 查库核对 |
+| 修改（1） | `backend/app/main.py`（挂载 knowledge_bases 路由） |
+| 修改（文档） | `docs/progress.md`、`docs/findings.md`（D-035 / D-036 / D-037）、`docs/task_plan.md`、`openspec/.../tasks.md` |
 
 > 提交前已按 `AGENTS.md` §4 走质量门禁：**两轴并行子代理审查**（Standards 轴对 AGENTS.md / constitution / 两个 ADR；Spec 轴对 `user-auth` 规格 + tasks 3.x）→ **无硬违规**；1 条判断题已修（e2e 脚本改为从 `.env` 读 `NGINX_HOST_PORT` / `TOKEN_EXPIRE_MINUTES`，不再写死 8080 / 86400）。完整结论见 `docs/findings.md` D-032。
 
@@ -30,32 +31,29 @@
 
 | 提交 | 内容 |
 | --- | --- |
+| （本组） | **第 4 组知识库落地（4.1–4.2）** |
+| `b464f22` | docs: 交接材料补记 fc4623a（规格回写与构建缓存修复） |
 | `fc4623a` | 规格回写（用户名规则 / 当前账号自省）+ 修镜像构建缓存 |
 | `7a7e648` | 交接材料刷新到第 3 组完工状态（第 4 次交接） |
-| `bb95bef` | **第 3 组账号体系落地（3.1–3.3）+ ADR-0002 批准与依赖** |
+| `bb95bef` | 第 3 组账号体系落地（3.1–3.3）+ ADR-0002 批准与依赖 |
 | `d9a1cb2` | 交接材料刷新到第 2 组完工状态（第 3 次交接） |
 | `98735be` | 第 2 组数据模型与迁移落地（2.1–2.2）+ 修掉 3 个环境缺陷 |
-| `3210f38` | 刷新交接文档与开工提示词到第 1 组完工后的状态 |
-| `b531d27` | 第 1 组运行环境落地（1.2–1.6） |
-| `ad2e410` | 新增新会话开工提示词 |
-| `bd6e9f6` | 配置对齐实际网关并补齐交接文档与验收语料 |
-| `d34b36b` | 初始化仓库并落地 W5 规格基线与 OpenSpec 提案 |
 
 ---
 
 ## 二、下一步从哪开始
 
-1. **第 4 组：知识库**（`tasks.md` 4.1 / 4.2）—— 无需新依赖，不必走停机点
-   - `4.1` 创建 / 列表 / 重命名：重名、空名、超长名被拒；**列表条目要带该库当前文档数量**；双账号交叉下列表只含自己的库；**重命名他人知识库被拒且数据不变**
-   - `4.2` 删除：空库可删；非空库拒绝并返回未清空数量
-   - **必读衔接点（上一组留的，容易踩）**：文档数量与非空判断**只统计 `documents.deleted_at IS NULL` 的行**；
-     若某库只剩墓碑行，删库前需先物理清除，否则会被 `fk_documents_kb_id_knowledge_bases`（刻意保持 RESTRICT）拦住。
-     细节见 `docs/findings.md` D-024
-2. **之后按 tasks.md 顺序**：5.x 上传受理 → 6.x 后台管线 → 7.x 状态与进度 → 8.x 失败重试与中断补偿 → 9.x 删除清理 → 10.x 验收留档
+1. **第 5 组：文档上传与受理**（`tasks.md` 5.1–5.5）—— 预期零新依赖
+   - `5.1` 上传：类型白名单、`MAX_UPLOAD_MB` 上限、落共享卷、写 `uploaded` 记录、投递任务后立即返回（SC-001：10MB PDF 2 秒内受理且期间服务仍响应）
+   - `5.2` 归属约束：`kb_id` 必填 + 属主校验 —— **直接复用 `services/knowledge_base.py::get_owned_knowledge_base`**（它就是把 `id` 与 `user_id` 放同一条 WHERE，取不到即 404）
+   - `5.3` 分布式锁：**若为此引入新库（如 redis 之外的东西）即为停机点，先写 ADR 等批**；本机 redis 已在，优先用它
+   - `5.4` 片段反查 / `5.5` 列表与详情：都属于读取路径，注意**一律带 `deleted_at IS NULL`**（D-024）
+2. **之后按 tasks.md 顺序**：6.x 后台管线 → 7.x 状态与进度 → 8.x 失败重试与中断补偿 → 9.x 删除清理 → 10.x 验收留档
 3. **开发者已点头的跳步项**：`6.1 先写分块算法测试`（零新依赖、不碰模型服务）获准提前做，但按 tasks.md 属第 6 组，
-   第 3 组期间**未跳步**。下一个会话若想利用等待间隙可以动它
-4. **本组的两个"规格未规定项"待开发者表态**：用户名**大小写敏感**（`alice` ≠ `Alice`）；密码**只校验下限、无上限**。
-   已记在 `docs/progress.md` 第 3 组末尾，**不要自行改约束**
+   第 3 / 4 组期间**均未跳步**。下一个会话若想利用等待间隙可以动它
+4. **5.x 落地后的一个收尾动作**：`backend/tests/test_knowledge_base_api.py` 里"造文档状态"用的是直接插库的桩
+   （`_insert_document`，因为 5.x 之前没有上传接口）。5.x 完成后可评估是否改走真实上传接口 ——
+   **不必强求**：那几个用例被测的是 4.x 的计数与拒删逻辑，不是"文档怎么来的"
 
 ---
 
@@ -121,6 +119,8 @@ export PATH="/d/Docker/App/resources/bin:/c/Users/ASUS/.workbuddy/binaries/Porta
 | 处理任务粒度 | `processing_tasks.document_id` **唯一** —— 一文档恒一行，重试复用该行只累加计数 | 迁移 `0001` |
 | 状态列类型 | `VARCHAR(20)` + 应用层枚举（不用 PG 原生枚举）；入库值 `uploaded/parsing/chunking/vectorizing/ready/failed` | `app/models/enums.py` |
 | kb_id 外键 | `documents.kb_id → knowledge_bases.id` **不级联**（RESTRICT），是"非空拒删"的第二道闸门 | ADR-0001 / 迁移 `0001` |
+| **知识库接口**（第 4 组） | 越权访问他人知识库一律 **404**（不用 403 —— 403 会把"他人资源是否存在"变成可探测信息）；重命名是 **PATCH 语义**（未带 `description` 则保留原值，靠 `UNSET` 哨兵 + `model_fields_set` 区分"没传"与"传 null"）；名称**不归一小写**、长度上限取模型常量 `KB_NAME_MAX_LENGTH`（= DDL 的 128，不另设配置项）；列表的 `document_count` **只算 `deleted_at IS NULL`** | findings D-035 |
+| 知识库删除顺序 | 计数为 0 时**先物理清除该库下的墓碑文档**（`chunks` / `processing_tasks` 随 `ON DELETE CASCADE` 走）**再删库**；否则墓碑行持有的 `kb_id` 会被 RESTRICT 外键拦住 | findings D-037 |
 | **鉴权选型**（第 3 组） | **PyJWT `>=2.9`** 签发凭证 + **argon2-cffi `>=23.1`** 做密码哈希（argon2id，**不经 passlib**）；argon2 参数**不进 Settings**；**不改 DDL** | **ADR-0002（已批准）** |
 | **凭证契约**（第 3 组） | payload 只放 `sub/iat/exp`；传输用 `Authorization: Bearer`；校验失败一律 401 且**不区分**过期/伪造；登录失败不区分"用户不存在/密码错误"，且**用户不存在时也跑一次假哈希**防时序侧信道 | ADR-0002 D4 |
 | 目录布局 | 代码与规格直接放仓库根，不再嵌套 `docmind/` 层 | `AGENTS.md` §7 |
@@ -144,24 +144,29 @@ backend/
     ├── app/api/deps.py                 ★3.3：get_db_session + get_current_user（鉴权唯一入口）
     ├── app/api/routes/health.py        /health/live 与 /health/ready
     ├── app/api/routes/auth.py          ★3.1–3.3：POST /api/auth/register|login、GET /api/auth/me
+    ├── app/api/routes/knowledge_bases.py  ★4.1/4.2：GET/POST /api/knowledge-bases、PATCH/DELETE /{kb_id}
     ├── app/schemas/auth.py             ★用户名归一化 + 密码强度校验 + 请求/响应模型
+    ├── app/schemas/knowledge_base.py   ★4.1：名称「先 strip 再判长」+ 创建/重命名/响应模型
     ├── app/services/auth.py            ★注册 / 校验凭证（哈希走 asyncio.to_thread）
+    ├── app/services/knowledge_base.py  ★4.1/4.2：归属校验唯一入口 get_owned_knowledge_base + 计数 + 非空拒删
     ├── app/models/                     5 张表（users / knowledge_bases / documents / chunks / processing_tasks）
     ├── alembic/versions/0001_initial_schema.py   五张表初始 DDL（只增不改）
     ├── tests/conftest.py               配置隔离 / 双客户端 / 测试库 schema / **Account + account_factory + two_accounts**
     ├── tests/test_config.py  test_health.py  test_error_contract.py  test_models.py
     ├── tests/test_security.py          ★3.1/3.2 算法层单测
-    └── tests/test_auth_api.py          ★3.1–3.3 接口层验收
+    ├── tests/test_auth_api.py          ★3.1–3.3 接口层验收
+    └── tests/test_knowledge_base_api.py  ★4.1/4.2 接口层验收（含越权与 RESTRICT 外键的机制层断言）
 docker-compose.yml                      api / worker / beat / pg / redis / nginx；Milvus 走 milvus profile
 docker/nginx.conf                       反代 api；用 Docker 内置 DNS 按 TTL 重解析上游
 tools/gen_acceptance_corpus.py          验收语料生成器（确定性可重建）
 tools/verify_auth_e2e.py                ★3.x 端到端验收（经 nginx 真实 HTTP）
+tools/verify_knowledge_base_e2e.py      ★4.x 端到端验收（经 nginx 真实 HTTP + 查库核对）
 openspec/changes/add-doc-ingest-pipeline/
     ├── proposal.md / specs/{user-auth,knowledge-base,document-ingest}/spec.md / design.md
     └── tasks.md                        10 组 / 35 项（**1.1–1.6、2.1–2.2、3.1–3.3 已勾选并带证据**）
 specs/001-doc-ingest-pipeline/spec.md   W5 规格基线（冻结）
 docs/PROJECT_CONTEXT.md                 项目简报
-docs/task_plan.md                       周级计划与当前状态（已刷新到 11/35）
+docs/task_plan.md                       周级计划与当前状态（已刷新到 13/35）
 docs/findings.md                        决策沉淀 D-001 ~ **D-031**
 docs/progress.md                        进度流水（逐组证据，末尾是最新的「第 3 组」一节）
 docs/notes.md                           teach 讲解笔记骨架（W5 起逐周填）
@@ -282,8 +287,9 @@ docs/新会话提示词.md                      开工提示词（主提示词 +
 7. **`.specify/` 入库但已停用**：保留作历史与宪法来源；新会话不要被它误导回 spec-kit 流程。
 8. **数据库现状**：`docmind` 与 `docmind_test` 均在 `0001`（本组无 DDL 变更）。结构变更一律**新增修订文件**，
    验收方式照第 2 组：干净库上 `upgrade → downgrade base → upgrade` + `alembic check`。
-9. **交给第 4 / 9 组的衔接点**：知识库的"文档数量"与"非空拒删"只统计 `deleted_at IS NULL` 的行；
-   删除前若只剩墓碑行，需先物理清除，否则被 `fk_documents_kb_id_knowledge_bases` 拦住。
+9. **交给第 9 组的衔接点**：知识库的"文档数量"与"非空拒删"只统计 `deleted_at IS NULL` 的行
+   —— **第 4 组已按此实现并落地**（`services/knowledge_base.py`，且删除时会先物理清墓碑，见 D-037）。
+   第 9 组做"删除文档"时仍需遵守同一口径：写墓碑 + 同事务物理删 `chunks` / `processing_tasks`，读取一律 `deleted_at IS NULL`。
 10. **可复现的建库 / 迁移命令**：
 
     ```bash
