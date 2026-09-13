@@ -34,7 +34,7 @@
 | 1 | 运行环境（分层骨架 + compose + 配置系统 + 测试脚手架 + 错误契约） | ✅ 完成 | 6 容器全 healthy + 经 nginx 真请求 200；配置三档校验（缺必需项即失败）；错误契约 `{code,message,detail?}`；pytest 21 passed |
 | 2 | 数据模型与迁移（ADR-0001：5 张表 + Alembic 0001） | ✅ 完成 | 干净库 upgrade→downgrade→upgrade 全通过；`alembic check` 无差异；容器内迁移亦成功 |
 | 3 | JWT + 用户体系（账号体系） | ✅ 完成 | 注册 / 登录 / 鉴权依赖就绪；经 nginx 真请求 **11/11 PASS**；pytest **58 passed, 0 skipped** |
-| 4 | 知识库（4.1 创建/列表/重命名、4.2 非空拒删） | ✅ 完成 | 4 个接口就绪（`/api/knowledge-bases`）；经 nginx 真请求 **26/26 PASS**（含查库核实）；pytest **92 passed, 0 skipped** |
+| 4 | 知识库（4.1 创建/列表/重命名、4.2 非空拒删） | ✅ 完成 | 4 个接口就绪（`/api/knowledge-bases`）；经 nginx 真请求 **26/26 PASS**（含查库核实）；pytest **93 passed, 0 skipped** |
 | 5 | 文档上传（含知识库归属）→ Celery 管线 | 未开始 | 10MB PDF 上传不阻塞 API，状态机进度可查 |
 | 6 | 失败重试（自动 2 + 手动 3）+ 错误回写 | 未开始 | 坏文件 failed 可重试，超限有提示 |
 | 7 | teach：FastAPI / SQLAlchemy / JWT-RBAC / Celery | 未开始 | 笔记入 `notes.md` |

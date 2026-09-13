@@ -12,7 +12,7 @@
 `openspec list` → **13/35 tasks**、`validate --strict` 通过；
 开发库 `docmind` 与测试库 `docmind_test` 仍在 Alembic **`0001`**（本组无 DDL 变更，`alembic check` → `No new upgrade operations detected.`）；
 6/6 容器 healthy（pg 5433 / redis 6380 / nginx 8080），镜像重建实测 **1 分 26 秒**（D-034 的缓存修复持续生效）；
-`pytest -q` → **92 passed, 0 skipped**（第 4 组开工前为 58）；
+`pytest -q` → **93 passed, 0 skipped**（第 4 组开工前为 58）；
 经 nginx 打真实请求跑 `tools/verify_knowledge_base_e2e.py` → **26/26 PASS**（含"查库核对"，不是只看接口状态码）。
 **下一项第 5 组（上传与受理 5.1–5.5）预期零新依赖，可直接实施；只有 5.3 的分布式锁若引入新库才触发停机点。**
 
@@ -96,8 +96,10 @@ export PATH="/d/Docker/App/resources/bin:/c/Users/ASUS/.workbuddy/binaries/Porta
 - git 2.55.0，全局身份 `Asize <3238075590@qq.com>`
 - Docker Desktop（CLI 29.7.2 / daemon linux / compose v5.3.1）—— 已常驻 `docmind` 栈
 - Alembic 已接入：宿主用 `backend/.venv/Scripts/alembic.exe`，容器内用 `docker exec docmind-api alembic upgrade head`
-- **测试基线**：`cd backend && .venv/Scripts/python.exe -m pytest -q` → **58 passed, 0 skipped**
+- **测试基线**：`cd backend && .venv/Scripts/python.exe -m pytest -q` → **93 passed, 0 skipped**
 - **端到端基线**：`cd backend && .venv/Scripts/python.exe ../tools/verify_auth_e2e.py` → **11/11 PASS**（经 nginx）
+- **端到端基线（4.x）**：`cd backend && .venv/Scripts/python.exe ../tools/verify_knowledge_base_e2e.py` → **26/26 PASS**
+  （经 nginx 真请求 + `docker exec docmind-pg psql` 查库核对，末尾自清测试数据）
 - **两个虚拟环境，勿混用**：
   - 仓库根 `.venv/`（Python 3.13.14）—— **只用于生成验收语料**（`tools/gen_acceptance_corpus.py`）
   - `backend/.venv/`（Python 3.12.3，系统解释器 `D:\IDE\Python\Python312`，**第 3 组重建过一次**）—— 后端运行时与测试
