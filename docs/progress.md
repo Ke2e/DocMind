@@ -581,4 +581,4 @@ Spec 轴对 `knowledge-base` 规格 + tasks 4.x。
 - 开发库 `docmind`：`users=0` / `knowledge_bases=0` / `documents=0` / `chunks=0` / `processing_tasks=0`
 - 测试库 `docmind_test`：public schema 仅剩 `alembic_version`（pytest 的 `db_schema` fixture 约定，非残留）
 - `openspec list` → **13/35 tasks**
-- 容器 6/6 healthy；本轮改动**已提交**（提交号见交接文档）
+- 容器 6/6 healthy；本轮改动**已提交**：交付 `7fdecd1`（11 文件，+1651/−46）
