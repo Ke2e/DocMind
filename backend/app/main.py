@@ -17,9 +17,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.deps import get_settings
-from app.api.routes import auth, health, knowledge_bases
+from app.api.routes import auth, documents, health, knowledge_bases
 from app.core.db import dispose_engine
 from app.core.errors import register_exception_handlers
+from app.core.redis import dispose_redis
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # 两个连接池都要收：数据库（core/db.py）与常驻 Redis（core/redis.py，5.3 起）
+        await dispose_redis()
         await dispose_engine()
 
 
@@ -51,6 +54,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(knowledge_bases.router)
+    app.include_router(documents.router)
     return app
 
 

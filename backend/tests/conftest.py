@@ -8,6 +8,10 @@
    库不可达时跳过（而不是伪装通过）。
 4. **账号 fixture** —— `account_factory` / `two_accounts`（任务 1.5 的遗留项，3.3 起启用），
    供鉴权与越权用例复用；`db_schema` 每用例重建表，故用户名可以固定，不会跨用例串味。
+5. **文档域 fixture（5.x）** —— `db_session` / `session_factory`（造 chunk 等 6.x 才会产生的
+   数据；并发用例必须各开各的会话）、`upload_root`（测试专用上传目录 + 上传参数覆盖，
+   **不做收尾删除**，理由见该 fixture 的文档字符串）、`redis_client`
+   （真实 Redis db 15，不可达即 skip）。
 
 测试库前置（本机无本地 PG，只能用 compose 起的实例）：
 
@@ -57,11 +61,18 @@ os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL") or _test_databa
 os.environ["REDIS_URL"] = os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:6380/15")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 
+# **不要**在这里用 `os.environ` 覆盖 UPLOAD_DIR / MAX_UPLOAD_MB 之类的业务参数：
+# OS 环境变量优先级高于 env_file，那会让 `test_config.py` 里"业务参数默认值"的断言
+# 读到被测试污染的值而变红（2026-09-13 实测踩到：MAX_UPLOAD_MB 被压成 2 之后
+# `test_business_params_have_defaults` 与 `test_business_params_are_overridable` 双双失败）。
+# 上传相关的覆盖改在 `upload_root` fixture 里 patch **Settings 实例**，只影响本用例。
+
 from collections.abc import AsyncIterator, Awaitable, Callable  # noqa: E402
 
 import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker  # noqa: E402
 
 from app.api.deps import get_settings  # noqa: E402
 from app.core.config import Settings  # noqa: E402
@@ -182,3 +193,85 @@ async def account_factory(client: AsyncClient, db_schema) -> Callable[..., Await
 async def two_accounts(account_factory) -> tuple[Account, Account]:
     """双账号：鉴权与"越权访问他人对象"用例的基础（规格「数据归属由登录态决定」）。"""
     return await account_factory("alice"), await account_factory("bob")
+
+
+# ---------------------------------------------------------------------------
+# 5.x 追加：文档域需要的四个 fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def session_factory(settings: Settings, db_schema) -> async_sessionmaker[AsyncSession]:
+    """会话工厂（与"应用同引擎、但独立"）。
+
+    给需要**多个并发会话**的用例（如 5.3 的并发投递）：`AsyncSession` 不是并发安全的，
+    两个协程共用一个会话会串味，必须各开各的。
+    """
+    from app.core.db import get_session_factory
+
+    return get_session_factory(settings)
+
+
+@pytest.fixture
+async def db_session(session_factory) -> AsyncIterator[AsyncSession]:
+    """一个独立的会话，供用例直接造数据（如 6.x 才会产生的 chunk）。
+
+    每次操作后用例自己 `commit()` —— 应用的会话是**另一个** session，
+    未提交的行它看不见（与 production 的进程间可见性同一回事，不是测试假象）。
+    """
+    async with session_factory() as session:
+        yield session
+
+
+@pytest.fixture
+def upload_root(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """交出测试专用的上传目录，并把上传相关配置改成测试口径。
+
+    做两件事，都不动进程环境变量（理由见文件顶部）：
+
+    1. `UPLOAD_DIR` 指到 `uploads/_pytest`（`uploads/` 已被 .gitignore 覆盖），
+       与开发者本机真正在用的 `uploads/` 隔离；
+    2. `MAX_UPLOAD_MB` 压到 **2**，让"超限"路径用几 MB 载荷就能覆盖边界。
+       真实的 50MB 上限由 `tools/verify_document_e2e.py` 用真实配置验
+       （10MB PDF + 51MB 请求）。
+
+    改的是 `get_settings()` 那个**单例实例**本身，而应用的依赖注入拿的正是它
+    （`SettingsDep` → `get_settings`），所以 patch 会真的作用到被测代码上。
+    用 `monkeypatch` 而非直接赋值：用例结束自动还原，不跨用例串味。
+
+    **刻意不做收尾删除**：本机沙箱对"批量删除"有守卫（同一轮删除条目累计到阈值即
+    `SystemExit`），fixture 里 `shutil.rmtree` 会把用例打挂并连锁污染后续用例
+    （2026-09-13 实测：37 个用例因此变成 error）。残留的是几 KB 的测试载荷、
+    落在被忽略的目录里，且落盘文件名由服务端 uuid 生成不会互相覆盖；
+    要清理时人工 `rm -rf uploads/_pytest` 即可。因此需要"确实没落盘"的断言，
+    请用前后两次目录**快照**比对，而不是断言目录为空。
+    """
+    monkeypatch.setattr(settings, "UPLOAD_DIR", Path("uploads/_pytest"))
+    monkeypatch.setattr(settings, "MAX_UPLOAD_MB", 2)
+    root = settings.upload_dir
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+@pytest.fixture
+async def redis_client(settings: Settings) -> AsyncIterator["aioredis.Redis"]:
+    """真实 Redis 客户端（测试库 db 15）。不可达则 skip，不伪装通过。
+
+    进用例前先 `flushdb()`：上一轮若在临界区中崩过，可能留下未过期的投递锁，
+    而"锁还在"会让 5.3 的投递用例静默返回 False —— 那是最难查的一类假失败。
+    """
+    import redis.asyncio as aioredis
+
+    client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        await client.ping()
+    except Exception as exc:  # noqa: BLE001 - 探测失败要 skip，但原因必须写进日志
+        await client.aclose()
+        pytest.skip(
+            f"Redis 不可达（{type(exc).__name__}: {exc}），请先 docker compose up -d redis"
+        )
+    await client.flushdb()
+    try:
+        yield client
+    finally:
+        await client.aclose()

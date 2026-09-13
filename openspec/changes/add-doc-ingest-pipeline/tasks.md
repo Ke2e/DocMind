@@ -75,11 +75,34 @@
 
 ## 5. 文档上传与受理
 
-- [ ] 5.1 上传接口：类型白名单（PDF / DOCX / MD / TXT）、单文件 `MAX_UPLOAD_MB` 上限、落盘到共享卷、写入 `uploaded` 记录、投递处理任务后立即返回，验证：10MB PDF 提交在 2 秒内返回受理结果且期间服务仍响应其他请求（SC-001，在 compose 环境中实测，排除首次冷启动）；超限与不支持类型在提交阶段被拒且不产生文档记录
-- [ ] 5.2 文档归属约束（`kb_id` 必填 + 属主校验；原 4.3，因依赖上传接口而移入本组），验证：未指定知识库的提交被拒；向他人知识库提交被拒且不产生文档记录
-- [ ] 5.3 任务投递与并发保护（分布式锁），验证：并发提交同一文档两次，只产生一条处理记录
-- [ ] 5.4 片段反查接口（FR-005「可通过文档反查全部片段」），验证：返回该文档全部片段、按 `chunk_index` 升序；片段总数与文档 `chunk_count` 一致；越权访问他人文档的片段被拒
-- [ ] 5.5 文档列表与详情接口，验证：响应包含归属知识库、状态与片段数量；双账号下只返回自己的文档；按知识库筛选时不跨库（SC-008）
+- [x] 5.1 上传接口：类型白名单（PDF / DOCX / MD / TXT）、单文件 `MAX_UPLOAD_MB` 上限、落盘到共享卷、写入 `uploaded` 记录、投递处理任务后立即返回，验证：10MB PDF 提交在 2 秒内返回受理结果且期间服务仍响应其他请求（SC-001，在 compose 环境中实测，排除首次冷启动）；超限与不支持类型在提交阶段被拒且不产生文档记录
+  - **本项触发了停机点**：FastAPI 的 `UploadFile` / `Form()` 必须有 `python-multipart`，而开工前实测它**不在任何地方**（`backend/.venv` 与 `docmind-api` 容器都 `find_spec` 为 False，且不是 fastapi / uvicorn 的传递依赖）→ 先出 `docs/adr/0003-upload-multipart-dependency.md` 等批；开发者 2026-09-13 批复「装 python-multipart（推荐）」。故 `pyproject.toml` 的 `dependencies` 新增 `python-multipart>=0.0.9`（本组唯一新依赖，进 dependencies 而非 dev extras 才会进镜像）
+  - 完成证据（2026-09-13）：`POST /api/documents`（multipart：`file` + `kb_id`）→ 201；`test_upload_accepted_returns_201_and_persists_everything` 一次锁定五件事 —— **查库**（归属 = 凭证身份、`status=uploaded`、`chunk_count=0`）、**查盘**（内容与提交逐字节一致、落盘名由服务端 uuid 生成 ≠ 原文件名）、投递桩恰好调用一次、处理记录恰好一行、响应体不含 `storage_path`
+  - 拒绝路径（均**查库 + 查盘双断言**）：不支持类型（csv）→ **415** `unsupported_media_type` 且 `detail.allowed_extensions` 给出白名单；超出上限 → **413** `payload_too_large` 且 `detail.max_upload_mb`；无扩展名 → 415；扩展名大小写不敏感（`NOTES.PDF` → `file_type=pdf`）；**恰好等于上限必须通过**（`test_upload_exactly_at_the_size_limit_is_accepted`）；0 字节文件**不在提交阶段被拒**（能否处理出内容是 6.x 的事）
+  - **体积判定两道闸门**：`upload.size` 的快速闸门（不碰磁盘 —— 超限请求一个字节都不落盘，实测 starlette 1.6 的 multipart 解析器自 `size=0` 逐块累加，故该值恒为真实字节数）+ `_stream_to_disk` 按累计字节数的权威闸门（`test_streaming_size_guard_aborts_even_if_the_declared_size_lies` 故意喂"自称 1 字节"的 `UploadFile`，证明不信任上游声称的尺寸）
+  - 文件名护栏：`original_filename` 是 `VARCHAR(512)`，超长在接口层拒（400 + 可读提示 + `detail.max_filename_length`），不留给数据库抛 `StringDataRightTruncation`；恰好 512 字符通过
+  - **SC-001 实测（compose 环境，经 nginx，已排除冷启动）**：10.53MB PDF → 201，**耗时 0.333s**（预算 2s）；期间并发打 `/health/ready` **51 次**，最慢 **0.046s**；落盘字节数与源文件一致（`tools/verify_document_e2e.py`，**37/37 PASS**）
+- [x] 5.2 文档归属约束（`kb_id` 必填 + 属主校验；原 4.3，因依赖上传接口而移入本组），验证：未指定知识库的提交被拒；向他人知识库提交被拒且不产生文档记录
+  - 完成证据（2026-09-13）：`kb_id` 用 `Form(..., ge=1)` 声明为必填 → 缺字段 **422** 且 `detail` 里出现 `kb_id`、查库无新行；非整数 → 422
+  - **属主校验直接复用 4.1 的 `services/knowledge_base.py::get_owned_knowledge_base`**（`id` 与 `user_id` 同一条 WHERE）：向他人知识库提交 → **404**（不用 403，与 D-035 一致），且**查库无新行 + 查盘无新文件**（越权提交不该在服务器上留下任何字节）；不存在的 `kb_id` → 404
+  - **3.3 的越权写 defer 在此二次收口**：multipart 里塞 `user_id=<bob.id>` → 查库确认归属仍是 alice（`test_upload_ignores_user_id_in_the_request_body`）
+  - 顺序说明：类型白名单 → 归属校验 → 体积上限 → 落盘 —— 越权提交在**落盘之前**就被拦下
+- [x] 5.3 任务投递与并发保护（分布式锁），验证：并发提交同一文档两次，只产生一条处理记录
+  - 完成证据（2026-09-13）：`core/lock.py` 用 **已在栈里的 redis**（`redis>=5.0` 已在依赖里，**未引入新库**），`SET key token NX PX` 单命令加锁 + **Lua 比对令牌再删**释放（避免误删他人锁）；`ensure_processing_task` 用 `INSERT ... ON CONFLICT (document_id) DO NOTHING`
+  - 并发验收（真并发 + 真 Redis + 各自独立会话）：`test_concurrent_dispatch_yields_exactly_one_processing_task` 用 `asyncio.gather` 投递两次 → 恰好一次返回 True、投递桩恰好被调用 **1** 次、处理记录恰好 **1** 行
+  - 锁真的在挡事：`test_dispatch_is_skipped_while_the_lock_is_held`（预先占锁 → 返回 False、0 行、未入队）；`test_lock_is_released_after_dispatch`（临界区结束锁必已释放）；`test_second_dispatch_of_the_same_document_is_a_noop`（不并发地投两次也只入队一次）；`test_processing_tasks_document_id_unique_constraint_is_real`（绕过 service 直接插两行 → 被唯一约束拦下，这是 5.3 的最终裁判）
+  - **先提交再投递的顺序被钉死**：`test_dispatch_commits_before_enqueueing` 用记录调用次序的假会话断言 `insert → commit → enqueue` —— worker 是另一个进程，看不到未提交的行（反序会让任务在"文档还不存在"的窗口里被取走）
+  - 端到端（查库）：`documents=6 / processing_tasks=6`，且"按文档分组的记录数最大值 = 1"；**worker 日志**里核对到 7 条「收到文档处理任务」→ 投递真的到达执行层（不只证明 API 写了库）
+  - 交接点（写给 8.2）：`dispatch_processing_task` 是**首次投递**语义，第二次调用返回 False 且什么都不做；8.2 的手动重试要复用已有记录并重置状态，走另一条路径
+- [x] 5.4 片段反查接口（FR-005「可通过文档反查全部片段」），验证：返回该文档全部片段、按 `chunk_index` 升序；片段总数与文档 `chunk_count` 一致；越权访问他人文档的片段被拒
+  - 完成证据（2026-09-13）：`GET /api/documents/{document_id}/chunks`；`test_chunks_are_returned_in_order_and_match_chunk_count` 用**乱序插入** `[2,0,1]` 证明确实按 `chunk_index` 升序返回，且 `len(片段) == detail.chunk_count == 3`
+  - 越权/边界：他人文档 → 404；已删除（墓碑）文档 → 404；无凭证 → 401；无片段的文档 → 200 + `[]`
+  - **归属过滤写在语句里而不是靠调用方记得**（D-038 口径）：`list_chunks` 用 `JOIN documents` 带上 `user_id` 与 `deleted_at IS NULL`；`test_chunk_query_carries_its_own_ownership_filter` 直接以 bob 的身份调 service → 返回空
+  - 片段数据在测试与 e2e 里用桩插入：片段是 6.x 的产物，本项验的是**读取**（与第 4 组用 `stub_document` 造文档同一取舍）
+- [x] 5.5 文档列表与详情接口，验证：响应包含归属知识库、状态与片段数量；双账号下只返回自己的文档；按知识库筛选时不跨库（SC-008）
+  - 完成证据（2026-09-13）：`GET /api/documents`（可选 `?kb_id=`）与 `GET /api/documents/{document_id}`；`test_list_returns_only_own_documents` 双账号交叉 + 字段集合断言；`test_list_filters_by_kb_without_crossing_libraries`（两个库各造文档，筛任一个只回本库）
+  - 边界与越权：墓碑文档不出现在列表（`deleted_at IS NULL`，D-024）与详情；他人文档详情 → 404；不存在的文档 → 404；**用他人的 `kb_id` 筛选 → 404 而不是空列表**（空列表会把"库不是你的"藏起来）；无凭证 → 401
+  - 端到端（经 nginx）：列表只含自己的 6 份、副库筛选只回 1 份、他人库筛选 404、详情含 `kb_id`/`status`/`chunk_count` 且不含 `storage_path`
 
 ## 6. 后台处理管线
 

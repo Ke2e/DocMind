@@ -121,6 +121,41 @@ class UnauthorizedError(AppError):
         super().__init__(ErrorCode.UNAUTHORIZED, message, status_code=401, detail=detail)
 
 
+class PayloadTooLargeError(AppError):
+    """提交内容超出体积上限（任务 5.1，`MAX_UPLOAD_MB`）。
+
+    `code`/`status_code` 取自 1.6 契约里早已登记、此前无人使用的 `payload_too_large` / 413；
+    与 nginx 外层闸门（`client_max_body_size`）同码，前端只需处理一种。
+    """
+
+    def __init__(self, message: str | None = None, *, detail: Any | None = None) -> None:
+        super().__init__(ErrorCode.PAYLOAD_TOO_LARGE, message, status_code=413, detail=detail)
+
+
+class UnsupportedMediaTypeError(AppError):
+    """文件类型不在白名单内（任务 5.1，`ALLOWED_EXTENSIONS`）。
+
+    刻意用 415 而非笼统的 422：前端要能把它与"字段缺失/格式不对"分开提示。
+    """
+
+    def __init__(self, message: str | None = None, *, detail: Any | None = None) -> None:
+        super().__init__(
+            ErrorCode.UNSUPPORTED_MEDIA_TYPE, message, status_code=415, detail=detail
+        )
+
+
+class UpstreamError(AppError):
+    """上游依赖（broker / 外部服务）不可用（任务 5.3 起使用）。
+
+    与"我们自己的代码出错"（500）区分开：这类失败通常是暂时性的、重试可能成功，
+    所以用 503 且文案里明说"请稍后重试"。`code`/`status_code` 取 1.6 契约里
+    已登记的 `upstream_error`。
+    """
+
+    def __init__(self, message: str | None = None, *, detail: Any | None = None) -> None:
+        super().__init__(ErrorCode.UPSTREAM_ERROR, message, status_code=503, detail=detail)
+
+
 def _sanitize_validation_errors(exc: RequestValidationError) -> list[dict[str, Any]]:
     """只保留字段位置与原因，丢掉 pydantic 附加的内部上下文。"""
     return [

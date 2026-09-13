@@ -1,4 +1,4 @@
-"""FastAPI 依赖注入组件（任务 1.2 建立，3.3 起承载鉴权依赖）。
+"""FastAPI 依赖注入组件（任务 1.2 建立，3.3 起承载鉴权依赖，5.3 起提供 Redis 客户端）。
 
 鉴权的**唯一**入口是 `get_current_user`：身份只从 `Authorization: Bearer` 里的凭证推导，
 不接受请求体或查询参数里声明的用户标识（规格「数据归属由登录态决定」）。
@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Annotated
 
+import redis.asyncio as aioredis
 from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,10 +17,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.db import session_scope
 from app.core.errors import UnauthorizedError
+from app.core.redis import get_redis
 from app.core.security import InvalidTokenError, decode_access_token
 from app.models import User
 
-__all__ = ["Settings", "get_settings", "get_db_session", "get_current_user"]
+__all__ = [
+    "Settings",
+    "get_settings",
+    "get_db_session",
+    "get_current_user",
+    "get_redis_client",
+]
 
 
 # auto_error=False：缺凭证时由我们自己抛错，好让 401 的响应体走统一错误契约。
@@ -59,3 +67,13 @@ async def get_current_user(
     if user is None:
         raise UnauthorizedError("登录状态已失效，请重新登录")
     return user
+
+
+def get_redis_client(settings: SettingsDep) -> aioredis.Redis:
+    """进程内常驻的 Redis 客户端（任务 5.3 的投递锁用它）。
+
+    刻意**不用** `yield` 包成"每请求建/销"：客户端自带连接池，它的生命周期是进程级的，
+    每请求开关反而会把连接池的意义抹掉。释放由 FastAPI lifespan 的收尾统一负责
+    （见 `app/main.py`）。
+    """
+    return get_redis(settings)

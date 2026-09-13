@@ -427,3 +427,120 @@ cd backend && .venv/Scripts/python.exe -m pip install -e ".[dev]"
 | 列表排序 `created_at asc, id asc`、重命名幂等、名称 strip 且大小写不归一、响应带 `id/created_at/document_count` | **可保留但需记录**（规格未定，实现自选） |
 | 重命名他人库返回 404 而非 403 | 规格未规定状态码，属实现裁量；理由见 D-035 |
 
+## 2026-09-13（第 5 组：文档上传与受理）
+
+### D-039 上传受理（5.1 / 5.2）的六个判断题
+
+规格与 tasks 把"要什么"写清楚了，六处"怎么做"由实现定，记录在此以免下一个人重新纠结：
+
+| 判断 | 结论 | 理由 |
+| --- | --- | --- |
+| 上传的请求形态 | **标准 `multipart/form-data`**（`file` + `kb_id` 两个部分），为此引入 `python-multipart` | 这一步触发了停机点：FastAPI 的 `UploadFile`/`Form()` 必须有它，而开工前实测它不在任何地方（venv 与镜像都没有）。备选"原始字节流 + 查询参数传文件名"零依赖但把文件名从报文元数据降级成查询参数，002 起要加表单字段时会推倒重来。**完整论证与被否方案见 `docs/adr/0003`**（开发者 2026-09-13 已批） |
+| 提交成功的状态码 | **201 Created**（不是 202） | 接口确实创建了两个资源（`documents` 行 + `processing_tasks` 行），文档标识就是资源的标识；与 4.1 建库的 201 同一口径。202 会暗示"这是一个与资源无关的异步作业" |
+| 不支持类型 / 超限的拒绝码 | **415 `unsupported_media_type`** / **413 `payload_too_large`** | 两个码在 1.6 的错误契约里早就登记、此前无人使用；语义精确，比笼统的 422 更能让前端分流提示。413 与 nginx 外层闸门（`client_max_body_size 60m`）同码 |
+| 响应里要不要带 `storage_path` | **不带** | Key Entities 有"存储位置"属性，但它是服务端落盘路径：给前端毫无用处，只暴露目录结构。仍落库（worker 靠它读文件），只是不进对外视图。1.6 "不含内部实现细节"的同一条理由适用于正常响应的内部字段 |
+| 文件名过长怎么办 | **接口层拒掉（400 + 可读提示），不截断** | `original_filename` 是 `VARCHAR(512)`，不拦就会以 `StringDataRightTruncation` 从数据库冒上来变成 500 —— 正是 1.6 要挡的内部细节外泄。上限取模型常量 `ORIGINAL_FILENAME_MAX_LENGTH`（= DDL 的 512），不另设配置项。选"拒绝"而非"截断"：与 3.1 密码超长的处置一致，截断是静默改数据 |
+| 扩展名大小写 / 0 字节文件 | **大小写不敏感**（`NOTES.PDF` → `file_type=pdf`）；**0 字节文件在提交阶段受理** | 大小写沿用 `config.allowed_extensions` 的归一化口径（小写、去前导点）。0 字节是**合法提交**：它能不能处理出内容是 6.x 的事，提交阶段无权替它判死刑（规格把它列在"边界情况"而不是"提交阶段拒绝"里） |
+
+### D-040 投递的三道闸门，以及"先提交再投递"的顺序
+
+5.3 要求"并发提交同一文档两次只产生一条处理记录"。实现上有三道闸门，各管一段：
+
+| 闸门 | 挡住的场景 | 失效后果 |
+| --- | --- | --- |
+| Redis 分布式锁（`core/lock.py`） | 两个并发请求同时做投递 | 多投递几次，但下面两层仍保证不重复 |
+| `INSERT ... ON CONFLICT (document_id) DO NOTHING` | 任意时刻的重复投递 | 第二条处理记录 → 同一文档被并发处理 |
+| `deleted_at` 复查（**9.2 待加**） | 已删除的文档被重新调度 | 给墓碑文档写回数据（9.2 的验收点） |
+
+**锁实现的两个细节是刻意的**：加锁用单条 `SET key token NX PX`（不用 `SETNX` + `EXPIRE` 两步 ——
+两条命令之间挂掉会留下**永不过期的锁**，把该文档永久卡死）；释放用 Lua 比对令牌再删
+（直接 `DEL` 会在"本次临界区超时、锁已被别人抢走"时删掉**别人的锁**）。
+刻意不引入 `redis-py` 的 `Lock` 高阶封装：本项目只用这一个语义，12 行 Lua 比多一层不确定行为的封装好读。
+
+**"先提交再投递"的顺序不能反**：worker 是另一个进程，看不到未提交的行。若先投递后提交，
+任务会在"处理记录还不存在"的窗口里被取走而失败 —— 与 D-031 的"换容器窗口里的写请求不可信"是同一类时序问题。
+这条约束没法用真并发稳定观测（窗口是"投递成功但事务未提交"），故用记录调用次序的假会话把它钉死：
+`test_dispatch_commits_before_enqueueing` 断言 `insert → commit → enqueue`。
+
+**交给 8.2 的衔接点**：`dispatch_processing_task` 是**首次投递**语义 —— 只在该文档尚无处理记录时投递，
+第二次调用返回 `False` 且什么都不做。8.2 的手动重试要**复用**已有记录并重置状态，必须走另一条路径，
+不要拿它当重试入口。
+
+**交给 8.3 的衔接点**：投递失败（broker 抖动）时文档行与处理记录已提交，接口回 503 `upstream_error`
+（"文档已受理，但后台处理任务投递失败"）。这类记录的 `processing_tasks.last_run_at` 仍是 `NULL`，
+**8.3 的补偿扫描必须把"从未执行过"（`last_run_at IS NULL`）也算作可重新调度的对象**，
+否则这份文档会永远停在 `uploaded`。
+
+### D-041 本机沙箱的"删除守卫"会打挂 pytest（第 5 组实测，代价是 37 个用例变红）
+
+**现象**：把全量测试跑到一半，进度行突然出现 33 个 `E` + 2 个 `F`，而**同一个测试文件单独跑是 38 passed**。
+
+**根因（两条，互相独立，都要改）**：
+
+1. **沙箱接管了删除操作**。本机工作区内的 python 进程被注入了 `sitecustomize.py`，
+   它把 `shutil.rmtree` 与 `Path.unlink` 换成"移入回收站"的实现，并带一个**同一轮内累计的删除计数守卫**：
+   条目数累计到 50 就抛 `SystemExit(1)`。于是 fixture 里的 `shutil.rmtree(上传目录)`
+   在跑到第 ~25 个用例时把 fixture 打挂，后面所有用它的用例连锁报 error。
+   实测栈：`conftest.py:232 upload_root → shutil.rmtree → sitecustomize._safe_shutil_rmtree
+   → _try_trash → _check_bulk_delete_guard → _exit_bulk_guard_control → raise SystemExit(1)`。
+   **对策**：测试代码**不做收尾删除**（断言"确实没落盘"改用目录**前后快照**比对）；
+   产物落在 `.gitignore` 覆盖的目录里，需要时人工清。
+   生产代码里的清理改走 `os.remove`（实测在同一环境下未被接管），且**尽力而为、失败只记日志** ——
+   清理失败不该把 413 变成 500。
+2. **`conftest.py` 不能用 `os.environ` 覆盖业务参数**。我起初在 conftest 顶部写了
+   `os.environ["MAX_UPLOAD_MB"] = "2"`，结果 `test_config.py` 的两个用例变红 ——
+   它们构造**新的** `Settings` 并断言默认值，而 **OS 环境变量优先级高于 env_file**
+   （这正是 conftest 自己文档字符串里写明的事，只是没往这上面想）。
+   **对策**：覆盖改成 monkeypatch `get_settings()` 那个**单例实例**（应用的依赖注入拿的正是它），
+   只影响请求该 fixture 的用例。
+
+**顺带记下**：pytest 会话结束时它会清理 `%TEMP%` 下历代 `pytest-of-ASUS/` 垃圾目录，
+这一步同样会撞上守卫、让进程在打印汇总行之前死掉 —— 所以"看汇总行确认没有 skip"这条规矩，
+在本机需要显式给 `--basetemp=<工作区内的一次性目录>` 才能拿到完整输出。
+
+### D-042 体积上限为什么是两道闸门，以及 `upload.size` 凭什么可信
+
+- **快速闸门**（`store_upload` 开头）：`upload.size > max_upload_bytes` 就回 413，**不碰磁盘**。
+  实测依据：starlette 1.6 的 multipart 解析器构造 `UploadFile(..., size=0, ...)` 后逐块累加
+  （`datastructures.py` 的 `write()`），故该值恒为**解析器真实收到**的字节数，不是客户端声称的。
+  于是超限请求一个字节都不会落盘 —— 也就不存在"先写 51MB 再删"。
+- **权威闸门**（`_stream_to_disk`）：按实际落盘累计字节数判，不信任任何上游声称的尺寸。
+  `test_streaming_size_guard_aborts_even_if_the_declared_size_lies` 故意喂一个"自称 1 字节"的
+  `UploadFile`，证明这一层单独也是有效的。**越界的那一块不会被写下去**（落盘字节数恒 ≤ 上限），
+  所以该用例的判据写成"写了、但从未越过上限"，而不是 `== 2MB` —— 后者只是 1MB 块大小的巧合，不是契约。
+
+外层的字节级闸门是 nginx 的 `client_max_body_size 60m`（略大于 50MB 上限，已存在，本组未改）。
+超过 60MB 的请求由 nginx 直接回 413（HTML 体，非本项目错误契约）—— 属既定行为，记在案。
+
+### D-043 第 5 组提交前的两轴审查：0 条硬违规，但抓到 1 个输入护栏缺口
+
+审查方式与第 3 / 4 组一致：**两个只读子代理并行**，一个对「规」（`AGENTS.md` / constitution / 三个 ADR / findings），
+一个对「标准」（`document-ingest` 增量规格 + `specs/001` 冻结基线 + tasks 5.x）。基线 `3dcb193` → 未提交工作区。
+
+| 轴 | 结论 |
+| --- | --- |
+| Standards | **0 条硬违规**（对照 D-038 那种"docstring 宣称的比代码做到的多"的失配，这次逐条核过）。5 条判断题 + 3 条建议 |
+| Spec | 5.1–5.5 逐条验证要求**全部覆盖**；`document-ingest` 里依赖 6.x–9.x 的 Scenario 属计划内未覆盖（已在下表列明）；1 个真缺口（SC-001 当时只有脚本没有运行证据，随后已补跑 37/37 PASS） |
+
+**按审查改掉的东西**（都已落地）：
+
+| 项 | 问题 | 处置 |
+| --- | --- | --- |
+| **输入护栏缺口（最实质的一条）** | `original_filename` 直取客户端文件名、无长度护栏，而列是 `VARCHAR(512)` → 超长会以 `StringDataRightTruncation` 冒成 500 | 加接口层长度校验（400 + 可读提示 + `detail.max_filename_length`），上限取模型常量；补"超长被拒"与"恰好 512 通过"两个用例 |
+| J1（docstring 与代码失配） | 模块 docstring 宣称"每条读取都带用户维度过滤"，但 `list_chunks` 只按 `document_id` 查（`chunks` 无 `user_id` 列） | 按 D-038 已定的口径改成**自包含**：`list_chunks` 用 `JOIN documents` 带上 `user_id` 与 `deleted_at IS NULL`；docstring 的绝对措辞随之成立；补 `test_chunk_query_carries_its_own_ownership_filter`（换 `user_id` 就查不到） |
+| J2（无出处的因果） | 代码注释引用了当时并不存在的 `findings D-041` | 该条正是本组要写的沙箱删除守卫（D-041），补写后引用成立 |
+| J3（想当然的因果） | 注释断言"不显式写 `status` 就会在 async 下直接炸"——未实测（D-036 同类） | 改为只陈述意图（"让 `status` 只有一个明确来源"），删掉未经证实的崩溃断言 |
+| J4（docstring 断言过强） | 路由 docstring 说"提交成功创建了两个资源"，但拿不到锁时只创建前者 | docstring 加"正常路径"限定；并在该极窄路径上**补一条告警日志**（原来完全静默） |
+| S1（第 2 组遗留） | `models/document.py` 把红线出处写成 `AGENTS.md §6`（§6 是停机点，该条在 §5） | 顺手改为 §5 —— 与 D-038 修 `knowledge_base.py` 时纠正的同一错误 |
+| S3（缺锁定证据） | "先提交再投递是刻意的"只有推理，无测试锁定 | 补 `test_dispatch_commits_before_enqueueing`（假会话记录调用次序） |
+| 断言强度 | `test_all_four_supported_types_are_accepted` 只看 201 与 `file_type`，没查库查盘 | 补查库（`status`、字节数）与查盘（内容逐字节一致） |
+
+**规格未覆盖项（本组未擅自改规格，留待开发者表态）**：
+
+| 项 | 建议 |
+| --- | --- |
+| 状态码 201 / 415 / 413 与错误 `code`；越权一律 404 | **建议回写规格**（已由 ADR-0003 与 D-035 定案，属对外契约） |
+| 文档详情/列表的响应字段集合（含"不含 `storage_path`"） | **建议回写规格**（对外契约，且与 Key Entities 的字面有偏差） |
+| 扩展名大小写归一；0 字节文件在提交阶段被受理；超长文件名被拒（400） | **建议回写规格**（都是可被客户端观察到的行为） |
+| 文档列表排序 `created_at desc, id desc`；锁 TTL 为模块常量而非配置项；投递失败回 503 但文档行已落库 | **可保留但需记录**（规格未定，实现自选） |
+

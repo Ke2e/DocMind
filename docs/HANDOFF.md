@@ -1,76 +1,88 @@
 # DocMind 开发交接文档
 
-**交接时间**：2026-09-13（第 5 次交接）
-**交接范围**：W5 第 4 组知识库（4.1–4.2）已完成；**下一站是第 5 组文档上传与受理，无停机点阻塞**
+**交接时间**：2026-09-13（第 6 次交接）
+**交接范围**：W5 第 5 组文档上传与受理（5.1–5.5）已完成；**下一站是第 6 组后台处理管线，无停机点阻塞**
 **给下一个会话**：读完本文 + `AGENTS.md` 即可接手，不需要回溯聊天记录
 
 ---
 
 ## 一、当前状态（一句话）
 
-第 4 组已完成并提交 —— 交付 4 个知识库接口（`GET/POST /api/knowledge-bases`、`PATCH/DELETE /api/knowledge-bases/{kb_id}`）；
-`openspec list` → **13/35 tasks**、`validate --strict` 通过；
+第 5 组已完成 —— 交付 4 个文档接口（`POST /api/documents` 上传受理、`GET /api/documents` 列表、
+`GET /api/documents/{id}` 详情、`GET /api/documents/{id}/chunks` 片段反查）；
+`openspec list` → **18/35 tasks**、`validate --strict` 通过；
 开发库 `docmind` 与测试库 `docmind_test` 仍在 Alembic **`0001`**（本组无 DDL 变更，`alembic check` → `No new upgrade operations detected.`）；
-6/6 容器 healthy（pg 5433 / redis 6380 / nginx 8080），镜像重建实测 **1 分 26 秒**（D-034 的缓存修复持续生效）；
-`pytest -q` → **93 passed, 0 skipped**（第 4 组开工前为 58）；
-经 nginx 打真实请求跑 `tools/verify_knowledge_base_e2e.py` → **26/26 PASS**（含"查库核对"，不是只看接口状态码）。
-**下一项第 5 组（上传与受理 5.1–5.5）预期零新依赖，可直接实施；只有 5.3 的分布式锁若引入新库才触发停机点。**
+6/6 容器 healthy（pg 5433 / redis 6380 / nginx 8080），镜像重建实测 **64 秒**（缓存全命中：`Downloading` 0 行 / `Using cached` 117 行）；
+`pytest -q` → **136 passed, 0 skipped**（第 5 组开工前为 93）；
+经 nginx 打真实请求跑 `tools/verify_document_e2e.py` → **37/37 PASS**
+（含"查库 + 查容器"核对、**SC-001：10.53MB PDF 受理耗时 0.333s**、worker 日志确认投递到达）。
+**下一项第 6 组（后台处理管线 6.1–6.5）预期零新依赖，可直接实施。**
 
 **本组交付清单**
 
 | 类别 | 文件 |
 | --- | --- |
-| 新增（4） | `backend/app/schemas/knowledge_base.py`、`app/services/knowledge_base.py`、`app/api/routes/knowledge_bases.py`、`backend/tests/test_knowledge_base_api.py` |
-| 新增（验收） | `tools/verify_knowledge_base_e2e.py` —— 经 nginx 真请求 + `docker exec docmind-pg psql` 查库核对 |
-| 修改（1） | `backend/app/main.py`（挂载 knowledge_bases 路由） |
-| 修改（文档） | `docs/progress.md`、`docs/findings.md`（D-035 / D-036 / D-037）、`docs/task_plan.md`、`openspec/.../tasks.md` |
+| 新增（6） | `backend/app/core/redis.py`、`app/core/lock.py`、`app/schemas/document.py`、`app/services/document.py`、`app/api/routes/documents.py`、`backend/tests/test_document_api.py` |
+| 新增（验收） | `tools/verify_document_e2e.py` —— 经 nginx 真请求 + 查库 + **查容器共享卷** |
+| 新增（决策） | `docs/adr/0003-upload-multipart-dependency.md`（**Approved**） |
+| 修改（4） | `app/core/errors.py`（+413/415/503）、`app/api/deps.py`（+`get_redis_client`）、`app/main.py`、`app/workers/tasks.py`（+`process_document` 占位任务） |
+| 修改（依赖） | `backend/pyproject.toml` —— 新增 `python-multipart>=0.0.9`（**本组唯一新依赖，走 ADR-0003**） |
+| 修改（脚手架） | `backend/tests/conftest.py` —— +`session_factory` / `db_session` / `upload_root` / `redis_client` |
+| 修改（第 2 组遗留） | `app/models/document.py` —— `String(512)` 提为常量 `ORIGINAL_FILENAME_MAX_LENGTH`；红线出处 §6 → §5 |
 
-> 提交前已按 `AGENTS.md` §4 走质量门禁：**两轴并行子代理审查**（Standards 轴对 AGENTS.md / constitution / 两个 ADR；Spec 轴对 `user-auth` 规格 + tasks 3.x）→ **无硬违规**；1 条判断题已修（e2e 脚本改为从 `.env` 读 `NGINX_HOST_PORT` / `TOKEN_EXPIRE_MINUTES`，不再写死 8080 / 86400）。完整结论见 `docs/findings.md` D-032。
+> 提交前已按 `AGENTS.md` §4 走质量门禁：**两轴并行子代理审查**（Standards 轴对 AGENTS.md / constitution / 三个 ADR / findings；
+> Spec 轴对 `document-ingest` 增量规格 + `specs/001` + tasks 5.x）→ **0 条硬违规**；
+> 抓到一个实质缺口（`original_filename` 无长度护栏，超长会以 `StringDataRightTruncation` 冒成 500）已修，
+> 另有 4 条判断/建议已处置。完整结论见 `docs/findings.md` D-043。
 
 **最近一次提交拓扑**
 
-| 提交 | 内容 |
-| --- | --- |
-| `3e79baf` | docs: 开工提示词刷新到第 4 组完工状态（第 5 次交接）+ 修 3 处数字漂移 |
-| `190483b` | docs: 交接材料补记第 4 组提交号 |
-| `5d1e01b` | **第 4 组知识库落地（4.1–4.2）**（11 文件，+1651/−46） |
-| `d129130` | docs: 交接材料补记（规格回写与构建缓存修复） |
-| `00181b5` | 规格回写（用户名规则 / 当前账号自省）+ 修镜像构建缓存 |
-| `4e8fac5` | 交接材料刷新到第 3 组完工状态（第 4 次交接） |
-| `d70a322` | 第 3 组账号体系落地（3.1–3.3）+ ADR-0002 批准与依赖 |
-| `1c75619` | 交接材料刷新到第 2 组完工状态（第 3 次交接） |
-| `2155cea` | 第 2 组数据模型与迁移落地（2.1–2.2）+ 修掉 3 个环境缺陷 |
-| `fd9d836` | 刷新交接文档与开工提示词到第 1 组完工后的状态 |
-| `06b8fe1` | 第 1 组运行环境落地（1.2–1.6） |
-| `5d508f7` | 新增新会话开工提示词（主提示词 + 3 个场景变体） |
-| `544ce46` | 配置对齐实际网关并补齐交接文档与验收语料 |
-| `b33ec19` | 初始化仓库并落地 W5 规格基线与 OpenSpec 提案 |
+> ⚠️ 本表**以提交信息为准，不以哈希为准**（远端 `origin` 接入时本地历史被 rebase 过一次、哈希被整体重写；
+> 再发生一次 rebase / `pull --rebase` 这张表还会失效）。要定位某次提交，用
+> `git log --oneline --grep='<关键词>'`，别抄哈希。
 
-> **哈希是会被重写的，读这张表时请注意（2026-09-13 实况）**：
-> 远端 `origin` = `https://github.com/Ke2e/DocMind`；本地 `main` 在 2026-09-13 18:18 被
-> **rebase 到 `origin/main`**（为并入远端那条带 `LICENSE` 的 `Initial commit`），
-> 于是**本地全部提交的哈希被整体重写了一遍**，本文档与 `docs/progress.md` / `docs/findings.md` /
-> `openspec/.../tasks.md` 里原先引用的哈希**当时全部失效**，已在 2026-09-13 20:2x 批量换成上表的当前值。
->
-> 结论：**这张表以"提交信息"为准，不以哈希为准**（哈希会因 rebase / pull --rebase 整体变化）；
-> 想定位某次提交，用 `git log --oneline --grep='<关键词>'` 比抄哈希可靠。
-> 另有两处历史遗留：提交 `190483b` 与 `d129130` 的**提交信息正文**里写的是 rebase 之前的哈希
-> （`7fdecd1` / `fc4623a`），消息不可改，知道这件事即可。
+| 提交信息关键词 | 内容 |
+| --- | --- |
+| `第 5 组文档上传与受理落地` | **第 5 组（5.1–5.5）交付**（十六个文件） |
+| `docs: 哈希引用批量对齐 rebase 后的当前值` | 把 docs / openspec 里的哈希引用换成 rebase 后的值，并记下远端与漂移风险 |
+| `docs: 开工提示词刷新到第 4 组完工状态（第 5 次交接）` | 含 3 处数字漂移修正 |
+| `docs: 交接材料补记第 4 组提交号` | — |
+| `第 4 组知识库落地（4.1–4.2）` | 11 文件，+1651/−46 |
+| `docs: 交接材料补记（规格回写与构建缓存修复）` | — |
+| `规格回写（用户名规则 / 当前账号自省）+ 修镜像构建缓存` | — |
+| `第 3 组账号体系落地（3.1–3.3）+ ADR-0002 批准与依赖` | — |
+| `第 2 组数据模型与迁移落地（2.1–2.2）+ 修掉 3 个环境缺陷` | — |
+| `第 1 组运行环境落地（1.2–1.6）` | — |
+| `初始化仓库并落地 W5 规格基线与 OpenSpec 提案` | `b33ec19` |
 
 ---
 
 ## 二、下一步从哪开始
 
-1. **第 5 组：文档上传与受理**（`tasks.md` 5.1–5.5）—— 预期零新依赖
-   - `5.1` 上传：类型白名单、`MAX_UPLOAD_MB` 上限、落共享卷、写 `uploaded` 记录、投递任务后立即返回（SC-001：10MB PDF 2 秒内受理且期间服务仍响应）
-   - `5.2` 归属约束：`kb_id` 必填 + 属主校验 —— **直接复用 `services/knowledge_base.py::get_owned_knowledge_base`**（它就是把 `id` 与 `user_id` 放同一条 WHERE，取不到即 404）
-   - `5.3` 分布式锁：**若为此引入新库（如 redis 之外的东西）即为停机点，先写 ADR 等批**；本机 redis 已在，优先用它
-   - `5.4` 片段反查 / `5.5` 列表与详情：都属于读取路径，注意**一律带 `deleted_at IS NULL`**（D-024）
-2. **之后按 tasks.md 顺序**：6.x 后台管线 → 7.x 状态与进度 → 8.x 失败重试与中断补偿 → 9.x 删除清理 → 10.x 验收留档
-3. **开发者已点头的跳步项**：`6.1 先写分块算法测试`（零新依赖、不碰模型服务）获准提前做，但按 tasks.md 属第 6 组，
-   第 3 / 4 组期间**均未跳步**。下一个会话若想利用等待间隙可以动它
-4. **5.x 落地后的一个收尾动作**：`backend/tests/test_knowledge_base_api.py` 里"造文档状态"用的是直接插库的桩
-   （`_insert_document`，因为 5.x 之前没有上传接口）。5.x 完成后可评估是否改走真实上传接口 ——
+1. **第 6 组：后台处理管线**（`tasks.md` 6.1–6.5）—— 预期零新依赖
+   - `6.1` **先写分块算法测试**（保护清单要求 TDD）：递归降级顺序、默认 512/64 参数、空文档、
+     超长无标点段落、恰好等于粒度、表格密集 → 测试需**先失败**（实现还没写）
+   - `6.2` 原生实现分块器使测试转绿（**禁** LangChain / LlamaIndex 的分割器）；分块参数来自配置
+     （`CHUNK_SIZE_TOKENS` / `CHUNK_OVERLAP_TOKENS`）
+     - **内容忠实性按三项校验**：(a) 覆盖性 —— 原文每个 token 位置至少被一个片段包含；
+       (b) 顺序性 —— 按 `chunk_index` 升序拼接与原文顺序一致；(c) 忠实性 —— 每个片段是原文的连续子串。
+       **不得**用"拼接结果等于原文"当判据（与 64 token 重叠直接矛盾，见 design.md D5）
+   - `6.3` 解析适配层（PDF / DOCX / MD / TXT）+ 清洗（去页眉页脚噪声、统一空白）；无文本层 PDF 抛可识别错误
+   - `6.4` 管线编排与状态迁移（`uploaded → parsing → chunking → ready`）：**状态迁移必须收敛到单一方法**
+     并与 `processing_tasks.stage` **同事务成对写入**（D-025），拒绝非法迁移；10MB 全流程到完成；
+     `chunk_count` 与片段表行数一致
+   - `6.5` 幂等写入（同一事务内先清后写 + 唯一约束兜底）：同一文档跑两遍管线，片段数量与内容完全一致
+   - **6.x 落地时把 `app/workers/tasks.py::process_document` 从占位实现改成真管线** ——
+     目前它只记日志、不写库（这是刻意的，见该函数文档字符串：它让"投递真的到达 worker"可观测，
+     并让文档停在 `uploaded` 正好充当 7.1 的"尚未被领取"场景）
+2. **之后按 tasks.md 顺序**：7.x 状态与进度 → 8.x 失败重试与中断补偿 → 9.x 删除清理 → 10.x 验收留档
+3. **已写给 8.2 / 8.3 的两个衔接点**（见 `docs/findings.md` D-040）：
+   - 8.2 手动重试要**复用**已有处理记录并重置状态，走另一条路径 ——
+     `services/document.py::dispatch_processing_task` 是**首次投递**语义，重复调用返回 `False` 且不做任何事
+   - 8.3 的补偿扫描**必须把 `processing_tasks.last_run_at IS NULL`（从未执行过）也算作可重新调度的对象**，
+     否则"投递失败但文档已落库"的那份文档会永远停在 `uploaded`
+4. **一个可选收尾动作**：`backend/tests/test_knowledge_base_api.py` 里造文档状态用的是直接插库的桩
+   （`_insert_document`，因为 4.x 时还没有上传接口）。第 5 组已提供真实上传接口，可评估改走它 ——
    **不必强求**：那几个用例被测的是 4.x 的计数与拒删逻辑，不是"文档怎么来的"
 
 ---
@@ -101,6 +113,9 @@
 | **重命令会被 SIGTERM 掐断**（第 3 组新增） | 前台 `pip install` / `docker build` / bash 里 `for` 循环逐个 `ls` 都会中招；表现为输出为空 + exit 1 | 一律后台跑（`run_in_background`）。**被掐断 ≠ 没执行**：pip 子进程可能仍在后台装完，事后用只读命令核实 |
 | **被中断的 pip install 会把 venv 打残**（第 3 组新增） | site-packages 留下空壳目录 → `ImportError: cannot import name X from Y (**unknown location**)` | `unknown location` + `Y.__file__ is None` = 命名空间包遮住真包。诊断用「单进程脚本枚举 site-packages 顶层逐个 import」。修复：`mv .venv .venv.damaged` → 用系统解释器重建 → 装依赖 → 复测。**Windows 上 `--force-reinstall` 是坏选择**（卡在卸载阶段，实测 12 分钟无进展） |
 | **换容器窗口里的写请求不可信**（第 3 组新增） | `up -d --build` 刚返回就发写请求，那一轮写的事务回滚了（接口 11/11 全绿，但库里没数据） | 写操作的端到端验收**等服务稳定再跑**；**"写入成功"必须以查库为准**，不能只看接口回 201 |
+| **沙箱接管删除操作**（第 5 组新增，代价是 37 个用例变红） | 本机注入的 `sitecustomize.py` 把 `shutil.rmtree` / `Path.unlink` 换成"移入回收站"，并带**同一轮累计的删除计数守卫**（到 50 就抛 `SystemExit(1)`）。fixture 里 `rmtree` 会把用例打挂并连锁污染后续用例 —— 而同一文件单独跑是全绿，症状极具误导性 | 测试代码**不做收尾删除**（"没落盘"改用目录**前后快照**断言）；产物落在 `.gitignore` 覆盖的目录里。生产代码里的清理走 `os.remove`（实测未被接管）且**尽力而为**（失败只记日志，别把 413 变成 500）。详见 findings **D-041** |
+| **pytest 汇总行会被沙箱掐掉**（第 5 组新增） | pytest 收尾时要清 `%TEMP%\pytest-of-ASUS\` 下的历代垃圾目录，这一步撞上上面的守卫 → 进程在**打印汇总行之前**死掉，只留下进度行 | 拿到完整输出必须显式给 basetemp：`--basetemp="<工作区内的一次性目录>"`。**"看汇总行确认没有 skip"这条规矩在本机离不开它** |
+| **`conftest.py` 不能用 `os.environ` 覆盖业务参数**（第 5 组新增） | 在 conftest 顶部写 `os.environ["MAX_UPLOAD_MB"]="2"` → `test_config.py` 两条"业务参数默认值"断言变红（它们构造**新的** `Settings`，而 OS 环境变量优先级高于 env_file） | 覆盖改 patch `get_settings()` 的**单例实例**（应用依赖注入拿的正是它），只影响请求该 fixture 的用例。见 findings D-041 |
 
 **统一 PATH 前缀（建议每条 Bash 命令都用）：**
 
@@ -114,10 +129,12 @@ export PATH="/d/Docker/App/resources/bin:/c/Users/ASUS/.workbuddy/binaries/Porta
 - git 2.55.0，全局身份 `Asize <3238075590@qq.com>`
 - Docker Desktop（CLI 29.7.2 / daemon linux / compose v5.3.1）—— 已常驻 `docmind` 栈
 - Alembic 已接入：宿主用 `backend/.venv/Scripts/alembic.exe`，容器内用 `docker exec docmind-api alembic upgrade head`
-- **测试基线**：`cd backend && .venv/Scripts/python.exe -m pytest -q` → **93 passed, 0 skipped**
+- **测试基线**：`cd backend && .venv/Scripts/python.exe -m pytest -q --basetemp="../../uploads/_bt_$(date +%s)"` → **136 passed, 0 skipped**
+  （`--basetemp` 不能省，理由见上表"pytest 汇总行会被沙箱掐掉"）
 - **端到端基线**：`cd backend && .venv/Scripts/python.exe ../tools/verify_auth_e2e.py` → **11/11 PASS**（经 nginx）
 - **端到端基线（4.x）**：`cd backend && .venv/Scripts/python.exe ../tools/verify_knowledge_base_e2e.py` → **26/26 PASS**
-  （经 nginx 真请求 + `docker exec docmind-pg psql` 查库核对，末尾自清测试数据）
+- **端到端基线（5.x）**：`cd backend && .venv/Scripts/python.exe ../tools/verify_document_e2e.py` → **37/37 PASS**
+  （经 nginx 真请求 + `docker exec docmind-pg psql` 查库 + `docker exec docmind-api` 查共享卷里的文件，末尾自清测试数据与文件）
 - **两个虚拟环境，勿混用**：
   - 仓库根 `.venv/`（Python 3.13.14）—— **只用于生成验收语料**（`tools/gen_acceptance_corpus.py`）
   - `backend/.venv/`（Python 3.12.3，系统解释器 `D:\IDE\Python\Python312`，**第 3 组重建过一次**）—— 后端运行时与测试
@@ -141,6 +158,11 @@ export PATH="/d/Docker/App/resources/bin:/c/Users/ASUS/.workbuddy/binaries/Porta
 | kb_id 外键 | `documents.kb_id → knowledge_bases.id` **不级联**（RESTRICT），是"非空拒删"的第二道闸门 | ADR-0001 / 迁移 `0001` |
 | **知识库接口**（第 4 组） | 越权访问他人知识库一律 **404**（不用 403 —— 403 会把"他人资源是否存在"变成可探测信息）；重命名是 **PATCH 语义**（未带 `description` 则保留原值，靠 `UNSET` 哨兵 + `model_fields_set` 区分"没传"与"传 null"）；名称**不归一小写**、长度上限取模型常量 `KB_NAME_MAX_LENGTH`（= DDL 的 128，不另设配置项）；列表的 `document_count` **只算 `deleted_at IS NULL`** | findings D-035 |
 | 知识库删除顺序 | 计数为 0 时**先物理清除该库下的墓碑文档**（`chunks` / `processing_tasks` 随 `ON DELETE CASCADE` 走）**再删库**；否则墓碑行持有的 `kb_id` 会被 RESTRICT 外键拦住 | findings D-037 |
+| **上传的请求形态**（第 5 组） | 标准 **`multipart/form-data`**（`file` + `kb_id` 两部分），为此**批准**新增 `python-multipart>=0.0.9`（进 `dependencies` 才会进镜像）。被否方案：原始字节流（零依赖但把文件名降级成查询参数）、手写 multipart 解析 | **ADR-0003（已批准）** |
+| **提交受理的状态码**（第 5 组） | 提交成功 **201**（创建了 `documents` + `processing_tasks` 两个资源，不是 202）；不支持类型 **415** `unsupported_media_type`；超限 **413** `payload_too_large`；投递失败 **503** `upstream_error` | findings D-039 / D-040 |
+| **响应字段边界**（第 5 组） | `DocumentPublic` **不含 `storage_path`**（服务端落盘路径，对外无用且暴露目录结构）；`ChunkPublic` 不含 `document_id` / `id`。落盘文件名由服务端 uuid 生成，客户端文件名只用于展示与扩展名判定，不参与路径拼接 | findings D-039 |
+| **投递的三道闸门**（第 5 组） | Redis 分布式锁（`SET NX PX` + Lua 比对令牌释放）→ `INSERT ... ON CONFLICT (document_id) DO NOTHING` → `deleted_at` 复查（9.2 待加）。**先提交再投递**的顺序不能反（worker 是另一个进程，看不到未提交的行） | findings D-040 |
+| **体积上限的判据**（第 5 组） | 两道闸门：`upload.size` 快速闸门（不碰磁盘 —— starlette 的 multipart 解析器自 `size=0` 逐块累加，该值恒为真实字节数）+ 流式按累计字节数的**权威**闸门（不信任上游声称的尺寸） | findings D-042 |
 | **鉴权选型**（第 3 组） | **PyJWT `>=2.9`** 签发凭证 + **argon2-cffi `>=23.1`** 做密码哈希（argon2id，**不经 passlib**）；argon2 参数**不进 Settings**；**不改 DDL** | **ADR-0002（已批准）** |
 | **凭证契约**（第 3 组） | payload 只放 `sub/iat/exp`；传输用 `Authorization: Bearer`；校验失败一律 401 且**不区分**过期/伪造；登录失败不区分"用户不存在/密码错误"，且**用户不存在时也跑一次假哈希**防时序侧信道 | ADR-0002 D4 |
 | 目录布局 | 代码与规格直接放仓库根，不再嵌套 `docmind/` 层 | `AGENTS.md` §7 |
@@ -158,40 +180,50 @@ AGENTS.md                               AI 运行时规则（会话启动必读�
 .env / .env.example                     真实密钥 / 可提交样例（.env 已被忽略）
 backend/
     ├── app/core/config.py              配置系统（必需 3 / 占位 7 / 业务参数，缺必需项即失败）
-    ├── app/core/errors.py              统一错误响应契约 {code, message, detail?} + UnauthorizedError（3.3 新增）
+    ├── app/core/errors.py              统一错误响应契约 {code, message, detail?} + UnauthorizedError（3.3）+ 413/415/503（5.1/5.3）
     ├── app/core/db.py                  引擎 / 会话 / 连通性探测
+    ├── app/core/redis.py               ★5.3：常驻 Redis 客户端的生命周期（与 core/db.py 同一套路，lifespan 收尾释放）
+    ├── app/core/lock.py                ★5.3：分布式锁（SET NX PX 加锁 + Lua 比对令牌释放）
     ├── app/core/security.py            ★3.1/3.2：argon2id 哈希 + 凭证签发/校验（纯函数，不碰 DB）
-    ├── app/api/deps.py                 ★3.3：get_db_session + get_current_user（鉴权唯一入口）
+    ├── app/api/deps.py                 ★3.3：get_db_session + get_current_user（鉴权唯一入口）；★5.3：get_redis_client
     ├── app/api/routes/health.py        /health/live 与 /health/ready
     ├── app/api/routes/auth.py          ★3.1–3.3：POST /api/auth/register|login、GET /api/auth/me
     ├── app/api/routes/knowledge_bases.py  ★4.1/4.2：GET/POST /api/knowledge-bases、PATCH/DELETE /{kb_id}
+    ├── app/api/routes/documents.py     ★5.1–5.5：POST /api/documents（multipart）、GET 列表/详情/{id}/chunks
     ├── app/schemas/auth.py             ★用户名归一化 + 密码强度校验 + 请求/响应模型
     ├── app/schemas/knowledge_base.py   ★4.1：名称「先 strip 再判长」+ 创建/重命名/响应模型
+    ├── app/schemas/document.py         ★5.1–5.5：DocumentPublic（不含 storage_path）+ ChunkPublic
     ├── app/services/auth.py            ★注册 / 校验凭证（哈希走 asyncio.to_thread）
     ├── app/services/knowledge_base.py  ★4.1/4.2：归属校验唯一入口 get_owned_knowledge_base + 计数 + 非空拒删
+    ├── app/services/document.py        ★5.1–5.5：上传受理（白名单/上限/落盘）+ 投递（锁 + 幂等）+ 文档与片段读取
+    ├── app/workers/tasks.py            beat 心跳；★5.x：process_document（**占位实现**，6.x 接管线）
     ├── app/models/                     5 张表（users / knowledge_bases / documents / chunks / processing_tasks）
     ├── alembic/versions/0001_initial_schema.py   五张表初始 DDL（只增不改）
-    ├── tests/conftest.py               配置隔离 / 双客户端 / 测试库 schema / **Account + account_factory + two_accounts**
+    ├── tests/conftest.py               配置隔离 / 双客户端 / 测试库 schema / Account + account_factory + two_accounts
+    │                                   ★5.x：session_factory / db_session / upload_root / redis_client
     ├── tests/test_config.py  test_health.py  test_error_contract.py  test_models.py
     ├── tests/test_security.py          ★3.1/3.2 算法层单测
     ├── tests/test_auth_api.py          ★3.1–3.3 接口层验收
-    └── tests/test_knowledge_base_api.py  ★4.1/4.2 接口层验收（含越权与 RESTRICT 外键的机制层断言）
+    ├── tests/test_knowledge_base_api.py  ★4.1/4.2 接口层验收（含越权与 RESTRICT 外键的机制层断言）
+    └── tests/test_document_api.py      ★5.1–5.5 接口层验收（查库 + 查盘、并发投递、调用次序、墓碑读取）
 docker-compose.yml                      api / worker / beat / pg / redis / nginx；Milvus 走 milvus profile
-docker/nginx.conf                       反代 api；用 Docker 内置 DNS 按 TTL 重解析上游
+docker/nginx.conf                       反代 api；用 Docker 内置 DNS 按 TTL 重解析上游；client_max_body_size 60m
 tools/gen_acceptance_corpus.py          验收语料生成器（确定性可重建）
 tools/verify_auth_e2e.py                ★3.x 端到端验收（经 nginx 真实 HTTP）
 tools/verify_knowledge_base_e2e.py      ★4.x 端到端验收（经 nginx 真实 HTTP + 查库核对）
+tools/verify_document_e2e.py            ★5.x 端到端验收（经 nginx + 查库 + 查容器共享卷 + SC-001 计时）
 openspec/changes/add-doc-ingest-pipeline/
     ├── proposal.md / specs/{user-auth,knowledge-base,document-ingest}/spec.md / design.md
-    └── tasks.md                        10 组 / 35 项（**1.1–1.6、2.1–2.2、3.1–3.3 已勾选并带证据**）
+    └── tasks.md                        10 组 / 35 项（**1.1–1.6、2.1–2.2、3.1–3.3、4.1–4.2、5.1–5.5 已勾选并带证据**）
 specs/001-doc-ingest-pipeline/spec.md   W5 规格基线（冻结）
 docs/PROJECT_CONTEXT.md                 项目简报
-docs/task_plan.md                       周级计划与当前状态（已刷新到 13/35）
-docs/findings.md                        决策沉淀 D-001 ~ **D-031**
-docs/progress.md                        进度流水（逐组证据，末尾是最新的「第 3 组」一节）
+docs/task_plan.md                       周级计划与当前状态（已刷新到 18/35）
+docs/findings.md                        决策沉淀 D-001 ~ **D-043**
+docs/progress.md                        进度流水（逐组证据，末尾是最新的「第 5 组」一节）
 docs/notes.md                           teach 讲解笔记骨架（W5 起逐周填）
 docs/adr/0001-knowledge-base-entity.md  DDL 变更决策（Approved）
 docs/adr/0002-auth-libraries.md         鉴权选型（**Approved**）
+docs/adr/0003-upload-multipart-dependency.md  上传传输形态 + python-multipart（**Approved**）
 docs/HANDOFF.md                         本文
 docs/新会话提示词.md                      开工提示词（主提示词 + 3 个场景变体）
 ```
@@ -326,7 +358,8 @@ docs/新会话提示词.md                      开工提示词（主提示词 +
     （判据是同一次构建日志里 `Downloading` 0 行 / `Using cached` 115 行，不是耗时——耗时会被网络带偏）。
     **首次**构建（缓存为空）仍需全量下载。若某环境 compose 用旧 builder 不认 `--mount`，回退那一行即可。
 13. **远端已接上 + 哈希会漂移（2026-09-13 实况，务必知道）**：
-    - `origin` = `https://github.com/Ke2e/DocMind`；`main` 已推送，本地只多一个未推送提交 `3e79baf`（本文档这次刷新）
+    - `origin` = `https://github.com/Ke2e/DocMind`；`main` 已推送过（第 5 组完工前本地可能比远端多若干个
+      docs 类提交），推送前先 `git log --oneline origin/main..HEAD` 看一眼差哪些
     - 该远端原来是独立初始化过的（有一条带 `LICENSE` 的 `Initial commit`），故本地历史被 **rebase 到 `origin/main`** 上，
       **本地全部提交的哈希因此被整体重写**（旧 `d34b36b/bb95bef/fc4623a/b464f22/7fdecd1/27cc5b5` 等已不在分支里，
       对象仍在，内容未丢，树差异只有远端带来的 `LICENSE`）
@@ -334,3 +367,16 @@ docs/新会话提示词.md                      开工提示词（主提示词 +
     - **给下一个会话的提醒**：写交接材料时别把哈希当锚点；要引用某次提交就用提交信息的关键词。
       另外如果又做了一次 rebase / `pull --rebase`，这张表还会整体失效——**先 `git log --oneline` 核一遍再引用**
     - 顺带：这也说明"提交前把哈希写进文档"的做法本身脆弱（第 4 组已踩过一次：`HEAD = <sha>` 每多一个提交就旧一次）
+14. **交给第 8 组的两个衔接点（第 5 组留下，务必看）**：
+    - **8.2 手动重试**要**复用**已有处理记录并重置状态，走另一条路径 ——
+      `services/document.py::dispatch_processing_task` 是**首次投递**语义，重复调用返回 `False` 且什么都不做
+    - **8.3 中断补偿扫描**必须把 `processing_tasks.last_run_at IS NULL`（**从未执行过**）也算作可重新调度的对象；
+      否则"投递失败但文档已落库"的那份文档会永远停在 `uploaded`（第 5 组的投递失败路径会留下这种记录）
+15. **第 5 组留下的"规格未覆盖"项（未擅自改规格，等开发者表态）**：状态码 201/415/413 与越权 404、
+    文档响应字段集合（含"不含 `storage_path`"）、扩展名大小写归一 / 0 字节文件在提交阶段被受理 / 超长文件名被拒（400）
+    —— **建议回写 `document-ingest` 规格**；文档列表排序、锁 TTL 为模块常量、投递失败回 503 但文档行已落库
+    —— **可保留但记录在案**。逐条见 `docs/findings.md` D-043。
+    （第 4 组还留着两项同类待表态：`description` 字段 + PATCH 语义、列表 `document_count` 口径。）
+16. **`uploads/` 下会攒测试产物**（第 5 组起）：测试用的 `uploads/_pytest`、pytest 的 `_bt_*` basetemp、
+    e2e 的日志都落在被 `.gitignore` 覆盖的 `uploads/` 里。测试**不自动清理**（理由见上表"沙箱接管删除操作"），
+    攒多了人工 `rm -rf uploads/_pytest uploads/_bt_*` 即可。容器侧的共享卷由 e2e 脚本自清（实测 0 残留）。

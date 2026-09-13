@@ -582,3 +582,161 @@ Spec 轴对 `knowledge-base` 规格 + tasks 4.x。
 - 测试库 `docmind_test`：public schema 仅剩 `alembic_version`（pytest 的 `db_schema` fixture 约定，非残留）
 - `openspec list` → **13/35 tasks**
 - 容器 6/6 healthy；本轮改动**已提交**：交付 `5d1e01b`（11 文件，+1651/−46）
+
+## 2026-09-13（第 5 组：文档上传与受理）
+
+### 开工前基线复核（真实命令，非印象）
+
+```bash
+docker compose ps --format 'table {{.Name}}\t{{.State}}\t{{.Health}}'
+# → api / beat / nginx / pg / redis / worker 6/6 running healthy
+
+cd backend && .venv/Scripts/python.exe -m pytest -q
+# → 93 passed（汇总行无 skipped）
+
+git log --oneline -1 && git status --short
+# → 3dcb193；工作区干净
+
+openspec list && openspec validate add-doc-ingest-pipeline --strict
+# → 13/35 tasks；Change 'add-doc-ingest-pipeline' is valid
+```
+
+**开工即撞停机点**（交接材料写的是"预期零新依赖"，机器核查把这个判断证伪了）：
+FastAPI 的 `UploadFile` / `Form()` 必须有 `python-multipart`，而它**不在任何地方**：
+
+```bash
+cd backend && .venv/Scripts/python.exe -m pip list | grep -i multipart      # → 0 行
+docker exec docmind-api python -c "import importlib.util as u; print(bool(u.find_spec('multipart')))"
+# → False
+grep -rn -i -E "multipart|UploadFile|form-?data" --include=*.md --include=*.py . | grep -v '\.venv'
+# → 只有 pip vendor 的无关命中：规格 / 提案 / tasks 均未规定上传的传输形态
+```
+→ 先出 `docs/adr/0003-upload-multipart-dependency.md`（含被否的两个方案）等批，
+开发者批复「装 python-multipart（推荐）」后落地。
+
+### 交付物
+
+| 类别 | 文件 |
+|---|---|
+| 新增（6） | `backend/app/core/redis.py`、`app/core/lock.py`、`app/schemas/document.py`、`app/services/document.py`、`app/api/routes/documents.py`、`backend/tests/test_document_api.py` |
+| 新增（验收） | `tools/verify_document_e2e.py` —— 经 nginx 真请求 + **查库 + 查容器**核对（10.1 会并入统一入口） |
+| 新增（决策） | `docs/adr/0003-upload-multipart-dependency.md`（**Approved**） |
+| 修改（4） | `app/core/errors.py`（+413/415/503 三个错误类）、`app/api/deps.py`（+`get_redis_client`）、`app/main.py`（挂路由 + 释放 redis 连接池）、`app/workers/tasks.py`（+`process_document` 占位任务） |
+| 修改（依赖） | `backend/pyproject.toml` —— `dependencies` 新增 `python-multipart>=0.0.9`（**本组唯一新依赖**） |
+| 修改（测试脚手架） | `backend/tests/conftest.py` —— +`session_factory` / `db_session` / `upload_root` / `redis_client` 四个 fixture |
+| 修改（第 2 组遗留） | `app/models/document.py` —— `String(512)` 提为常量 `ORIGINAL_FILENAME_MAX_LENGTH`；红线出处 §6 → §5 |
+
+**新增依赖 1 项（走 ADR-0003 批准）、无 DDL 变更、无 collection 变更** → 除上传依赖外未触及停机点。
+
+### 接口清单
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/documents` | 提交并立即受理（multipart：`file` + `kb_id`），201 / 415 / 413 / 404 / 422 |
+| `GET` | `/api/documents` | 列表，可选 `?kb_id=` 筛选（不跨库）；他人 `kb_id` → 404 |
+| `GET` | `/api/documents/{document_id}` | 详情（含归属知识库 / 状态 / 片段数量） |
+| `GET` | `/api/documents/{document_id}/chunks` | 片段反查，按 `chunk_index` 升序 |
+
+### 第 5 组任务状态
+
+| 任务 | 状态 | 验证证据 |
+|---|---|---|
+| 5.1 上传受理 | 完成 | 201 + **查库**（归属/`status=uploaded`）+ **查盘**（逐字节一致、落盘名 ≠ 原名）；csv 415、超限 413 均双查（无行 + 无文件）；恰好 2MB 通过；`NOTES.PDF` → `file_type=pdf`；0 字节受理；文件名超 512 拒 400、恰好 512 通过；**SC-001：10.53MB PDF 0.333s 受理，期间 51 次健康探针最慢 0.046s** |
+| 5.2 归属约束 | 完成 | 缺 `kb_id` → 422 且查库无新行；向他人库提交 → **404** 且查库无行 + 查盘无文件；不存在的库 → 404；multipart 塞 `user_id` → 查库归属仍是自己 |
+| 5.3 投递与并发保护 | 完成 | `asyncio.gather` 并发投递同一文档 → 恰好 1 次成功、入队 1 次、处理记录 1 行；预先占锁 → 返回 False 且 0 行；临界区结束锁已释放；绕过 service 插两行被唯一约束拦下；**调用次序 `insert → commit → enqueue` 被假会话钉死**；端到端 `documents=6 / processing_tasks=6` 且分组最大值 =1；worker 日志 7 条「收到文档处理任务」 |
+| 5.4 片段反查 | 完成 | 乱序插入 `[2,0,1]` → 返回 `[0,1,2]`；`len(片段) == chunk_count == 3`；他人文档 / 墓碑文档 / 无凭证 → 404 / 404 / 401；无片段 → `[]`；换 `user_id` 调 service → 空（自带归属过滤） |
+| 5.5 列表与详情 | 完成 | 双账号交叉只回自己的；两个库筛选不跨库；他人 `kb_id` 筛选 → 404（不是空列表）；墓碑不进列表与详情；详情字段齐全且不含 `storage_path`；无凭证 4 条路径全 401 |
+
+### 证据（可复现命令与输出）
+
+```bash
+# 1) 单测（ASGI 直连）
+cd backend && .venv/Scripts/python.exe -m pytest -q --basetemp="../../uploads/_bt_$(date +%s)"
+# → 136 passed in 52.55s
+#   基线 93 → 136（本组新增 43 个用例）；⚠️ 汇总行无 skipped 才是真的 0 skipped
+#   --basetemp 必须给：本机沙箱会接管 pytest 收尾时对 %TEMP% 垃圾目录的清理并直接
+#   把进程掐掉，汇总行会整个丢失（见 findings D-041）
+
+# 2) 端到端（经 nginx 打真实 HTTP；本机无 curl）
+cd backend && .venv/Scripts/python.exe ../tools/verify_document_e2e.py
+# → 合计 37 项，FAIL 0 项
+
+# 3) 镜像重建（findings D-033/D-034 的缓存修复，本轮两次实测）
+docker compose up -d --build
+# → 第 1 次 92 秒：Downloading=2 / Using cached=115（只下了 python-multipart 那个新 wheel）
+# → 第 2 次 64 秒：Downloading=0 / Using cached=117（缓存全命中）
+docker exec docmind-api python -c "import importlib.metadata as m; print(m.version('python-multipart'))"
+# → 0.0.32
+docker exec docmind-worker python -c "import app.workers.tasks; from app.workers.celery_app import celery_app; print('app.workers.tasks.process_document' in celery_app.tasks)"
+# → True（注意：不加 `import app.workers.tasks` 会得到 False —— 任务注册发生在 worker 启动导入时）
+docker exec docmind-api python -c "import app.main as m; print(len(m.app.routes))"
+# → 8（4 条 Framework 默认 + 4 个 _IncludedRouter）
+
+# 4) 开发库状态（写操作以查库为准）
+docker exec docmind-pg psql -U docmind -d docmind -tAc \
+  "SELECT 'users='||count(*) FROM users UNION ALL SELECT 'kbs='||count(*) FROM knowledge_bases UNION ALL SELECT 'docs='||count(*) FROM documents UNION ALL SELECT 'chunks='||count(*) FROM chunks UNION ALL SELECT 'tasks='||count(*) FROM processing_tasks;"
+# → 全 0（e2e 脚本自清，且脚本内已断言）
+docker exec docmind-api sh -c "ls -1 /data/uploads | wc -l"
+# → 0（共享卷无残留）
+
+# 5) 迁移状态（本组无 DDL 变更，确认无漂移）
+docker exec docmind-api alembic current   # → 0001 (head)
+docker exec docmind-api alembic check     # → No new upgrade operations detected.
+```
+
+e2e 输出节选（37 项全见脚本输出）：
+
+```
+PASS  SC-001 10MB PDF（10.53MB）提交 ≤ 2.0s 返回受理   [201，耗时 0.333s]
+PASS  SC-001 上传期间服务仍响应其他请求   [51 次探针，最慢 0.0460s]
+PASS  5.1 docmind_manual.pdf 落盘到共享卷且字节数一致（查库 + 查容器）   [status=uploaded 库内=276964 卷上=276964]
+PASS  5.1 超出 50MB 上限 → 413 且说明上限   [413 {"code":"payload_too_large","message":"文件超出单文件体积上限（50MB）","detail":{"max_upload_mb":50}}]
+PASS  5.2 向他人知识库提交 → 404   [404 {"code":"not_found","message":"知识库不存在"}]
+PASS  5.3 每个文档恰好一条处理记录（无重复投递）   [documents=6 / processing_tasks=6]
+PASS  5.3 任务确实投递到了 worker（worker 日志核对）   [日志中 7 条 >= 期望 7 条]
+PASS  5.4 片段按 chunk_index 升序返回   [200 [0, 1, 2]]
+PASS  5.5 按知识库筛选不跨库（SC-008）   [副库返回 [14]]
+PASS  收尾：共享卷上的本轮文件已删除（查容器）   [清理了 7 个文件]
+合计 37 项，FAIL 0 项
+```
+
+### 本组踩到的两个环境陷阱（详见 findings D-041，两条都会让"绿灯"变假）
+
+1. **沙箱接管删除操作**：`shutil.rmtree` / `Path.unlink` 被换成"移入回收站"实现，且带**同一轮累计的删除计数守卫**，
+   到 50 就抛 `SystemExit(1)`。全量跑 pytest 时 fixture 里的 `rmtree` 在第 ~25 个用例被打挂，
+   **连锁 37 个用例变红**，而同一文件单独跑 38 passed —— 症状极具误导性。
+   对策：测试代码不做收尾删除（"没落盘"改用目录前后快照断言）；生产清理走 `os.remove` 且尽力而为。
+2. **`conftest.py` 不能用 `os.environ` 覆盖业务参数**：写了 `os.environ["MAX_UPLOAD_MB"]="2"` 之后，
+   `test_config.py` 两条"业务参数默认值"断言变红 —— 那两个用例构造**新的** `Settings`，
+   而 OS 环境变量优先级高于 env_file。对策：改 patch `get_settings()` 的单例实例。
+
+### 本组的两处实测（写进 findings D-042）
+
+- **`upload.size` 可信**：读 starlette 1.6 的源码确认 multipart 解析器自 `size=0` 逐块累加，
+  故它是"解析器真实收到的字节数"。据此把体积判定提到落盘之前（超限请求一个字节都不落盘）；
+  `_stream_to_disk` 的累计判定保留为权威闸门，并用"自称 1 字节"的 `UploadFile` 单独验证。
+- **越界的那一块不会被写下去**：我起初把断言写成落盘 `> 2MB`，实测是**恰好 2MB** ——
+  块级累计到超限那一刻抛错，越界块根本没写。判据改成"写了、但从未越过上限"（不写 `== 2MB`，
+  那只是 1MB 块大小的巧合，不是契约）。
+
+### 提交前的两轴审查（走 AGENTS.md §4 门禁，详见 findings D-043）
+
+两个只读子代理并行（基线 `3dcb193` → 工作区）：Standards 轴对 `AGENTS.md` / constitution / 三个 ADR / findings；
+Spec 轴对 `document-ingest` 增量规格 + `specs/001` + tasks 5.x。
+
+| 轴 | 结论 | 处置 |
+|---|---|---|
+| Standards | **0 条硬违规**；5 条判断题 + 3 条建议 | 已修：`list_chunks` 改为**自包含**归属过滤（JOIN 文档，去掉"靠调用方记得先查"）；删掉一条无出处的因果引用与一条未实测的崩溃断言；路由 docstring 加"正常路径"限定并给极窄路径补告警日志；`models/document.py` 红线出处 §6 → §5 |
+| Spec | 5.1–5.5 验证要求**全部覆盖**；依赖 6.x–9.x 的 Scenario 属计划内未覆盖 | 已修：**`original_filename` 缺长度护栏**（`VARCHAR(512)`，超长会以 `StringDataRightTruncation` 冒成 500）→ 补接口层校验 + 两个边界用例；`test_all_four_supported_types_are_accepted` 补查库查盘；补 `test_dispatch_commits_before_enqueueing` 把调用次序钉死 |
+
+**规格未覆盖项（未擅自改规格，留待开发者表态）**：状态码 201/415/413 与越权 404、文档响应字段集合（不含 `storage_path`）、
+扩展名大小写归一 / 0 字节受理 / 超长文件名被拒 —— **建议回写规格**；
+列表排序、锁 TTL 常量化、投递失败回 503 但文档已落库 —— **可保留但记录在案**。
+
+### 数据与环境收尾（已复核）
+
+- 开发库 `docmind`：`users=0` / `knowledge_bases=0` / `documents=0` / `chunks=0` / `processing_tasks=0`
+- 共享卷 `/data/uploads`：**0 个文件**（e2e 脚本自清并断言）
+- `openspec list` → **18/35 tasks**；`openspec validate add-doc-ingest-pipeline --strict` → valid
+- 容器 6/6 healthy；`alembic current` → `0001 (head)`、`alembic check` → 无新操作
+

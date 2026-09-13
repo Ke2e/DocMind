@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Final
 
 from sqlalchemy import (
     BigInteger,
@@ -37,6 +38,12 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 from app.models.enums import DOCUMENT_STATUS_TYPE, DocumentStatus
 
+#: `original_filename` 的长度上限 —— 取自 DDL（`VARCHAR(512)`），不另设配置项。
+#: 与 `KB_NAME_MAX_LENGTH` 同一口径：它是**列的形状**而不是可调业务参数，
+#: 抄成另一个字面量迟早与数据库脱节，届时表现为"接口放过、DB 报
+#: `StringDataRightTruncation`"（正是 1.6 要挡住的内部细节外泄）。
+ORIGINAL_FILENAME_MAX_LENGTH: Final = 512
+
 
 class Document(Base):
     """一份被上传的原始文件及其处理状态。"""
@@ -44,12 +51,12 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    # 归属用户：所有查询都必须带此过滤（AGENTS.md §6 红线）
+    # 归属用户：所有查询都必须带此过滤（AGENTS.md §5「禁改清单」）
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True)
     # 归属知识库：ADR-0001 规定 NOT NULL
     kb_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("knowledge_bases.id"))
     # 原始文件名：仅作展示，不参与落盘命名（同名文件按新文档处理，见 Assumptions）
-    original_filename: Mapped[str] = mapped_column(String(512))
+    original_filename: Mapped[str] = mapped_column(String(ORIGINAL_FILENAME_MAX_LENGTH))
     # 落盘位置：相对 UPLOAD_DIR 的路径，api 与 worker 共享卷
     storage_path: Mapped[str] = mapped_column(String(1024))
     # 文件类型：小写扩展名、不含点（与 config.allowed_extensions 同一口径）
