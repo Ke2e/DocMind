@@ -69,7 +69,7 @@
   - 生成 `deepseek-v4-pro-0813` → 200；注意默认思考模式，小 `max_tokens` 会返回空 `content`
   - 嵌入 `qwen3.7-text-embedding` → 200，**维度 1024**（与 Milvus 规格一致）
   - 重排 `qwen3.7-text-rerank` → 200，但**只在 DashScope 原生路径**下（`/compatible-mode/v1/rerank` 等均 404）
-- **git 初始化**：`git init -b main` + 首次提交 `d34b36b`，43 个文件；
+- **git 初始化**：`git init -b main` + 首次提交 `b33ec19`，43 个文件；
   `.gitignore` 排除 `.env`、`.venv/`、`.codebuddy/`、`.workbuddy/`、`fixtures/acceptance/`，已逐条 `git check-ignore -v` 核验。
 - **验收语料**：新增 `tools/gen_acceptance_corpus.py`，生成 10 个文件（含 10.53MB / 114 页大 PDF）。
   pypdf 自检：正常 PDF 可抽文本、扫描件 0 字符、损坏件与错扩展名件报错——均符合预期。
@@ -237,7 +237,7 @@ DATABASE_URL="postgresql+asyncpg://docmind:<口令>@127.0.0.1:5433/docmind_test"
 
 | 检查项 | 命令 | 实测结果 |
 |---|---|---|
-| 提交与工作区 | `git log --oneline -3` / `git status --short` | HEAD = **`d9a1cb2`**（第 3 次交接文档），工作区**干净**（无输出） |
+| 提交与工作区 | `git log --oneline -3` / `git status --short` | HEAD = **`1c75619`**（第 3 次交接文档），工作区**干净**（无输出） |
 | 任务进度 | `openspec list` | `add-doc-ingest-pipeline  **8/35 tasks**` |
 | 容器 | `docker compose ps` | api / beat / nginx / pg / redis / worker **6/6 running healthy** |
 | **对外链路**（healthy 不算证据） | venv 内 httpx `GET http://127.0.0.1:8080/health/{live,ready}` | `/health/live` → **200** `{"status":"ok"}`；`/health/ready` → **200**，`{"checks":{"database":null,"redis":null}}` |
@@ -377,7 +377,7 @@ e2e 关键响应原文：
 
 ### 本组代码审查（第 3 组提交前，走 AGENTS.md §4 门禁）
 
-两轴并行子代理审查（基线 `d9a1cb2` → 工作区）：
+两轴并行子代理审查（基线 `1c75619` → 工作区）：
 
 | 轴 | 结论 | 处置 |
 |---|---|---|
@@ -446,7 +446,7 @@ cd backend && .venv/Scripts/python.exe -m pytest -q
 # → 58 passed in 12.09s（汇总行无 skipped）
 
 git log --oneline -1 && git status --short
-# → b464f22；工作区干净
+# → d129130；工作区干净
 ```
 
 ### 交付物
@@ -548,7 +548,7 @@ e2e 关键响应原文（节选，全部 26 项见脚本输出）：
 
 ### 提交前的两轴审查（走 AGENTS.md §4 门禁，详见 findings D-038）
 
-两轴只读子代理并行（基线 `b464f22` → 工作区）：Standards 轴对 `AGENTS.md` / constitution / 两个 ADR / findings；
+两轴只读子代理并行（基线 `d129130` → 工作区）：Standards 轴对 `AGENTS.md` / constitution / 两个 ADR / findings；
 Spec 轴对 `knowledge-base` 规格 + tasks 4.x。
 
 | 轴 | 结论 | 处置 |
@@ -581,4 +581,4 @@ Spec 轴对 `knowledge-base` 规格 + tasks 4.x。
 - 开发库 `docmind`：`users=0` / `knowledge_bases=0` / `documents=0` / `chunks=0` / `processing_tasks=0`
 - 测试库 `docmind_test`：public schema 仅剩 `alembic_version`（pytest 的 `db_schema` fixture 约定，非残留）
 - `openspec list` → **13/35 tasks**
-- 容器 6/6 healthy；本轮改动**已提交**：交付 `7fdecd1`（11 文件，+1651/−46）
+- 容器 6/6 healthy；本轮改动**已提交**：交付 `5d1e01b`（11 文件，+1651/−46）

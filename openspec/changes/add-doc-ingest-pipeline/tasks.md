@@ -1,7 +1,7 @@
 ## 1. 版本管理与运行环境
 
 - [x] 1.1 初始化 git 仓库与 `.gitignore`（排除 `.env`、`.codebuddy/`），验证：`git status` 中不出现真实 `.env`，首次提交成功
-  - 完成证据（2026-09-12）：`git init -b main` + 首次提交 `d34b36b`（43 文件）；`git check-ignore -v .env` 命中；`git log --oneline` 3 次提交，`git status --short` 为空
+  - 完成证据（2026-09-12）：`git init -b main` + 首次提交 `b33ec19`（43 文件）；`git check-ignore -v .env` 命中；`git log --oneline` 3 次提交，`git status --short` 为空
 - [x] 1.2 按 OneHub 已验证分层搭 `backend/` 骨架（`app/core` `app/api` `app/models` `app/schemas` `app/services` `app/workers`）与依赖清单，验证：本地能起空应用，`GET /health/live` 返回 200（**不依赖任何外部服务**），`GET /health/ready` 单独反映 PostgreSQL / Redis 连通性
   - 完成证据（2026-09-12）：`backend/.venv`（Python 3.12.3）+ 依赖装齐；`uvicorn app.main:app --port 8001` 启动日志 `Application startup complete.`；`/health/live` → 200 `{"status":"ok"}`；pg/redis 未起时 `/health/ready` → 503 并逐个报不可用，容器环境就位后 → 200 `{"status":"ok","checks":{"database":null,"redis":null}}`
 - [x] 1.3 编写 Docker Compose（api / worker / beat / pg / redis / nginx，Milvus 系列列为可选 profile），验证：`docker compose up -d` 后全部容器 healthy，且默认不启动 Milvus 相关容器

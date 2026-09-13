@@ -82,7 +82,7 @@
 - 语料正文即 DocMind 自身规格（512/64、50/50、RRF 常数 60、阈值 0.6/0.75/0.92、50MB），W7 的 20-query 评测集可直接复用。
 
 ### D-016 git 仓库已建立
-- `git init -b main`，首次提交 `d34b36b`，43 个文件入库。
+- `git init -b main`，首次提交 `b33ec19`，43 个文件入库。
 - `.gitignore` 排除：`.env`、`.venv/`、`.codebuddy/`、`.workbuddy/`、`fixtures/acceptance/`、Python/Node 产物；已用 `git check-ignore -v` 逐条核验命中。
 
 ### D-017 周计划确认（2026-09-12，停机点 2 通过）
@@ -207,7 +207,7 @@
 **两个过程性教训**：
 
 1. **中断 ≠ 未执行**：第一次探测与第二次探测结果不一致（第二次多出几个包能导入），说明被 SIGTERM 的 pip 子进程**还在后台继续装**。
-   与 `d9a1cb2` 那次"commit 审批超时但提交其实已落库"是同一类教训 —— 事后必须用只读命令核实真实状态。
+   与 `1c75619` 那次"commit 审批超时但提交其实已落库"是同一类教训 —— 事后必须用只读命令核实真实状态。
 2. **Windows 上 `--force-reinstall` 是坏选择**：它要先把所有包卸载再装，实测卡在卸载阶段 **12 分钟无任何进展**（日志 mtime 不动），只能主动终止。
    该环境下杀软 + 海量小文件删除/写入极慢。
 
@@ -262,7 +262,7 @@ cd backend && .venv/Scripts/python.exe -m pip install -e ".[dev]"
 前者是**输入护栏**——挡畸形超长输入白耗算力，不改变任何安全强度；后者是**抗爆破旋钮**——做成环境变量只会给人调小的机会。
 性质不同，所以一个进 `Settings`，一个留代码常量。
 
-**代码审查结论（两轴并行子代理，基线 `d9a1cb2` → 工作区；改动未提交，故给的是工作区 diff + 新增文件）**
+**代码审查结论（两轴并行子代理，基线 `1c75619` → 工作区；改动未提交，故给的是工作区 diff + 新增文件）**
 
 - **Standards 轴**：**无硬违规**。4 条判断题，其中 1 条已修：
   - ✅ 已修：`tools/verify_auth_e2e.py` 硬编码端口 `8080` 与有效期 `86400` → 改为从仓库 `.env` 读 `NGINX_HOST_PORT` / `TOKEN_EXPIRE_MINUTES`。
@@ -379,7 +379,7 @@ cd backend && .venv/Scripts/python.exe -m pip install -e ".[dev]"
 ### D-038 第 4 组提交前的两轴审查：1 条硬违规 + 1 条由审查引出的实现缺陷
 
 审查方式与第 3 组一致：**两个只读子代理并行**，一个对"规"（AGENTS.md / constitution / 两个 ADR / findings），
-一个对"标准"（`knowledge-base` 规格 + tasks 4.x）。基线 `b464f22` → 未提交工作区。
+一个对"标准"（`knowledge-base` 规格 + tasks 4.x）。基线 `d129130` → 未提交工作区。
 
 **硬违规（1 条，已修）**
 
